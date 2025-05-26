@@ -1,58 +1,56 @@
 import streamlit as st
 
-st.title("🔢 Visualisasi Merge Slot Berdasarkan Multiple Service")
+st.title("🔁 Visualisasi Merge Service dalam 1 Baris (Horizontal)")
 
-# --- INPUT MULTIPLE SERVICE ---
-st.markdown("### Input Data Service")
-with st.form("input_form"):
-    num_rows = st.number_input("Jumlah service", min_value=1, max_value=20, value=3)
-    services = []
-    for i in range(num_rows):
-        col1, col2 = st.columns([2, 2])
-        with col1:
+# Input form
+with st.form("form"):
+    num = st.number_input("Jumlah Service", 1, 20, 3)
+    entries = []
+    for i in range(num):
+        c1, c2 = st.columns(2)
+        with c1:
             svc = st.text_input(f"Service {i+1}", key=f"svc_{i}")
-        with col2:
+        with c2:
             slot = st.text_input(f"Slot (cth: 1-12)", key=f"slot_{i}")
-        services.append((svc, slot))
-    submitted = st.form_submit_button("Tampilkan")
+        entries.append((svc.strip(), slot.strip()))
+    go = st.form_submit_button("Tampilkan")
 
-# --- BANGUN HTML ---
-def build_visual_table(services):
-    html = "<table border='1' style='border-collapse: collapse; text-align: center;'>"
+def build_single_row_table(services):
+    row = [""] * 37  # posisi kolom 1-37
+    markers = [""] * 37
 
-    # Baris-baris Service
     for svc, slot in services:
-        if not svc or "-" not in slot:
-            continue
         try:
-            start, end = [int(x) for x in slot.split("-")]
-            if not (1 <= start <= end <= 37):
-                continue
+            start, end = [int(s) for s in slot.split('-')]
+            for i in range(start - 1, end):
+                if row[i] != "":
+                    markers[i] = "⚠️"  # Tanda tabrakan
+                row[i] = svc
         except:
             continue
 
-        html += "<tr>"
-        for i in range(1, 38):
-            if i == start:
-                colspan = end - start + 1
-                html += f"<td colspan='{colspan}'><b>{svc}</b></td>"
-            elif start < i <= end:
-                continue  # Sudah tergabung
-            else:
-                html += "<td></td>"
-        html += "</tr>"
+    html = "<table border='1' style='border-collapse: collapse; text-align:center;'><tr>"
+    i = 0
+    while i < 37:
+        if row[i] == "":
+            html += "<td></td>"
+            i += 1
+        else:
+            svc = row[i]
+            span = 1
+            while i + span < 37 and row[i + span] == svc:
+                span += 1
+            html += f"<td colspan='{span}'><b>{svc}</b></td>"
+            i += span
+    html += "</tr><tr>"
 
-    # Baris Angka 1-37
-    html += "<tr>"
-    for i in range(1, 38):
-        html += f"<td>{i}</td>"
-    html += "</tr>"
+    for i in range(37):
+        html += f"<td>{i+1}</td>"
+    html += "</tr></table>"
 
-    html += "</table>"
     return html
 
-# --- TAMPILKAN HASIL ---
-if submitted:
-    html_table = build_visual_table(services)
-    st.markdown("### Hasil Visualisasi")
-    st.markdown(html_table, unsafe_allow_html=True)
+if go:
+    html = build_single_row_table(entries)
+    st.markdown("### 🔍 Visualisasi (1 Baris Total)")
+    st.markdown(html, unsafe_allow_html=True)
