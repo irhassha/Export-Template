@@ -1,39 +1,58 @@
 import streamlit as st
-import pandas as pd
 
-# --- STEP 1: Buat tabel 1 baris dengan kolom 1-37 ---
-columns = [str(i) for i in range(1, 38)]
-df = pd.DataFrame([[""] * 37], columns=columns)
+st.title("🔢 Visualisasi Merge Slot Berdasarkan Multiple Service")
 
-# --- STEP 2: Input Service dan Slot ---
-st.title("Visualisasi Merge Slot Berdasarkan Service")
+# --- INPUT MULTIPLE SERVICE ---
+st.markdown("### Input Data Service")
+with st.form("input_form"):
+    num_rows = st.number_input("Jumlah service", min_value=1, max_value=20, value=3)
+    services = []
+    for i in range(num_rows):
+        col1, col2 = st.columns([2, 2])
+        with col1:
+            svc = st.text_input(f"Service {i+1}", key=f"svc_{i}")
+        with col2:
+            slot = st.text_input(f"Slot (cth: 1-12)", key=f"slot_{i}")
+        services.append((svc, slot))
+    submitted = st.form_submit_button("Tampilkan")
 
-service = st.text_input("Service (contoh: CIT)")
-slot_range = st.text_input("Slot (contoh: 1-12)")
+# --- BANGUN HTML ---
+def build_visual_table(services):
+    html = "<table border='1' style='border-collapse: collapse; text-align: center;'>"
 
-def build_merged_html(service, start, end):
-    html = "<table border='1' style='border-collapse: collapse;'><tr>"
+    # Baris-baris Service
+    for svc, slot in services:
+        if not svc or "-" not in slot:
+            continue
+        try:
+            start, end = [int(x) for x in slot.split("-")]
+            if not (1 <= start <= end <= 37):
+                continue
+        except:
+            continue
+
+        html += "<tr>"
+        for i in range(1, 38):
+            if i == start:
+                colspan = end - start + 1
+                html += f"<td colspan='{colspan}'><b>{svc}</b></td>"
+            elif start < i <= end:
+                continue  # Sudah tergabung
+            else:
+                html += "<td></td>"
+        html += "</tr>"
+
+    # Baris Angka 1-37
+    html += "<tr>"
     for i in range(1, 38):
-        if i == start:
-            colspan = end - start + 1
-            html += f"<td colspan='{colspan}' align='center'><b>{service}</b></td>"
-        elif start < i <= end:
-            continue  # sudah masuk di colspan sebelumnya
-        else:
-            html += f"<td>{''}</td>"
-    html += "</tr></table>"
+        html += f"<td>{i}</td>"
+    html += "</tr>"
+
+    html += "</table>"
     return html
 
-# --- STEP 3: Validasi dan Visualisasi ---
-if service and slot_range:
-    try:
-        start_slot, end_slot = [int(x) for x in slot_range.split('-')]
-        if 1 <= start_slot <= end_slot <= 37:
-            html = build_merged_html(service, start_slot, end_slot)
-            st.markdown(html, unsafe_allow_html=True)
-        else:
-            st.error("Slot harus antara 1 sampai 37")
-    except:
-        st.error("Format slot salah. Gunakan format seperti 1-12")
-else:
-    st.info("Masukkan Service dan Slot untuk memulai visualisasi.")
+# --- TAMPILKAN HASIL ---
+if submitted:
+    html_table = build_visual_table(services)
+    st.markdown("### Hasil Visualisasi")
+    st.markdown(html_table, unsafe_allow_html=True)
