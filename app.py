@@ -236,7 +236,8 @@ with tab2:
             gantt_df_base = df_crane_sheet2_viz[df_crane_sheet2_viz['Direction'] == 'Loading'].dropna(subset=['Bay_formatted', 'Crane', 'Seq.'])
             gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.']].drop_duplicates()
 
-            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)']], on='Seq.')
+            # --- PERBAIKAN: Sertakan 'Finish_Time_Hrs' dalam merge ---
+            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.')
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
             gantt_df['TextLabel'] = 'Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
