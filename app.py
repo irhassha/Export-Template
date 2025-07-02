@@ -231,20 +231,15 @@ with tab2:
             seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0)
             seq_moves['Finish_Time_Hrs'] = seq_moves['Time (hrs)'].cumsum()
             seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
-
-            start_datetime = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
-
-            seq_moves['Start'] = seq_moves['Start_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
-            seq_moves['Finish'] = seq_moves['Finish_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
-            seq_moves['Duration'] = seq_moves['Finish'] - seq_moves['Start']
-
+            
             # --- PERSIAPAN DATA UNTUK PLOTLY ---
             gantt_df_base = df_crane_sheet2_viz[df_crane_sheet2_viz['Direction'] == 'Loading'].dropna(subset=['Bay_formatted', 'Crane', 'Seq.'])
             gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.']].drop_duplicates()
 
-            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start', 'Duration']], on='Seq.')
+            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)']], on='Seq.')
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
+            gantt_df['TextLabel'] = 'Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
             gantt_df['Crane'] = gantt_df['Crane'].astype(int).astype(str)
 
             # --- LOGIKA PEWARNAAN ---
@@ -259,27 +254,40 @@ with tab2:
                 crane_df = gantt_df[gantt_df['Crane'] == crane]
                 fig.add_trace(go.Bar(
                     x=crane_df['Bay_formatted'],
-                    y=crane_df['Duration'],
-                    base=crane_df['Start'],
+                    y=crane_df['Time (hrs)'],
+                    base=crane_df['Start_Time_Hrs'],
                     name=f'Crane {crane}',
                     marker_color=color_map[crane],
-                    text=crane_df['Label'],
+                    text=crane_df['TextLabel'],
                     textposition='inside',
                     insidetextanchor='middle'
                 ))
 
-            # --- PENGURUTAN SUMBU X (BAY) ---
+            # --- PENGURUTAN & KONFIGURASI SUMBU ---
             gantt_df['sort_key'] = gantt_df['Bay_formatted'].str.split('-').str[0].astype(int)
             gantt_df = gantt_df.sort_values('sort_key')
             x_axis_order = gantt_df['Bay_formatted'].unique().tolist()
+            
+            start_hour = 8
+            y_ticks_values = list(range(int(gantt_df['Finish_Time_Hrs'].max()) + 2))
+            y_ticks_labels = [f"{(start_hour + h):02d}:00" for h in y_ticks_values]
 
             fig.update_layout(
                 title_text="Crane Sequence Gantt Chart",
                 xaxis_title="Bay",
                 yaxis_title="Time",
-                barmode='stack',
-                xaxis={'categoryorder':'array', 'categoryarray': x_axis_order},
-                yaxis_autorange='reversed',
+                barmode='overlay', # Mengganti 'stack' menjadi 'overlay'
+                xaxis={
+                    'categoryorder':'array', 
+                    'categoryarray': x_axis_order,
+                    'side': 'top' # Memindahkan sumbu X ke atas
+                },
+                yaxis={
+                    'autorange': 'reversed',
+                    'tickmode': 'array',
+                    'tickvals': y_ticks_values,
+                    'ticktext': y_ticks_labels
+                },
                 title_font_size=20,
                 font_size=12,
                 height=800,
