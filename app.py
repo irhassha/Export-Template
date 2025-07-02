@@ -148,22 +148,25 @@ with tab2:
             if s1_ok and s2_ok and unit_ok:
                 pos_to_crane_map = {}
                 pos_to_seq_map = {}
-                df_crane_s2_loading = df_crane_s2[df_crane_s2['Direction'] == 'Loading'].copy()
-                df_crane_s2_cleaned = df_crane_s2_loading.dropna(subset=['Bay', 'Crane', 'Seq.'])
+                pos_to_direction_map = {}
+                df_crane_s2_cleaned = df_crane_s2.dropna(subset=['Bay', 'Crane', 'Seq.', 'Direction'])
 
                 for _, row in df_crane_s2_cleaned.iterrows():
                     bay_range_str = format_bay(row['Bay'])
                     crane = row['Crane']
                     seq = row['Seq.']
+                    direction = row['Direction']
                     if bay_range_str:
                         if '-' in bay_range_str:
                             start, end = map(int, bay_range_str.split('-'))
                             for pos in range(start, end + 1):
                                 pos_to_crane_map[pos] = crane
                                 pos_to_seq_map[pos] = seq
+                                pos_to_direction_map[pos] = direction
                         else:
                             pos_to_crane_map[int(bay_range_str)] = crane
                             pos_to_seq_map[int(bay_range_str)] = seq
+                            pos_to_direction_map[int(bay_range_str)] = direction
 
                 df_crane_s1['Pos (Vessel)'] = pd.to_numeric(df_crane_s1['Pos (Vessel)'], errors='coerce')
                 df_crane_s1.dropna(subset=['Pos (Vessel)'], inplace=True)
@@ -176,12 +179,13 @@ with tab2:
                 df_crane_s1['Pos'] = df_crane_s1['Pos (Vessel)'].apply(extract_pos)
                 df_crane_s1['Crane'] = pd.to_numeric(df_crane_s1['Pos'], errors='coerce').map(pos_to_crane_map).fillna('N/A')
                 df_crane_s1['Seq.'] = pd.to_numeric(df_crane_s1['Pos'], errors='coerce').map(pos_to_seq_map).fillna('N/A')
+                df_crane_s1['Direction'] = pd.to_numeric(df_crane_s1['Pos'], errors='coerce').map(pos_to_direction_map).fillna('N/A')
 
                 df_crane_s1['Container'] = df_crane_s1['Container'].astype(str).str.strip()
                 df_unit_list['Unit'] = df_unit_list['Unit'].astype(str).str.strip()
 
                 merged_df = pd.merge(
-                    df_crane_s1[['Container', 'Pos', 'Crane', 'Seq.']],
+                    df_crane_s1[['Container', 'Pos', 'Crane', 'Seq.', 'Direction']],
                     df_unit_list[['Unit', 'Area (EXE)']],
                     left_on='Container',
                     right_on='Unit',
@@ -189,7 +193,7 @@ with tab2:
                 )
 
                 if not merged_df.empty:
-                    result_df = merged_df[['Container', 'Pos', 'Crane', 'Seq.', 'Area (EXE)']].drop_duplicates()
+                    result_df = merged_df[['Container', 'Pos', 'Crane', 'Seq.', 'Direction', 'Area (EXE)']].drop_duplicates()
                     st.write(f"Found area information for {len(result_df)} matching containers.")
                     st.dataframe(result_df, use_container_width=True)
                 else:
@@ -213,14 +217,14 @@ with tab2:
             
             # --- LOGIKA UNTUK MENGGABUNGKAN AREA DAN JUMLAH BOX ---
             area_summary = (
-                result_df.groupby(['Crane', 'Seq.', 'Area (EXE)'])
+                result_df.groupby(['Crane', 'Seq.', 'Direction', 'Area (EXE)'])
                 .size()
                 .reset_index(name='Count')
             )
             area_summary['Label'] = area_summary['Area (EXE)'] + ' (' + area_summary['Count'].astype(str) + ')'
             
             area_labels = (
-                area_summary.groupby(['Crane', 'Seq.'])['Label']
+                area_summary.groupby(['Crane', 'Seq.', 'Direction'])['Label']
                 .apply(lambda x: '<br>'.join(sorted(x)))
                 .reset_index()
             )
@@ -233,14 +237,13 @@ with tab2:
             seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
             
             # --- PERSIAPAN DATA UNTUK PLOTLY ---
-            gantt_df_base = df_crane_sheet2_viz[df_crane_sheet2_viz['Direction'] == 'Loading'].dropna(subset=['Bay_formatted', 'Crane', 'Seq.'])
-            gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.']].drop_duplicates()
+            gantt_df_base = df_crane_sheet2_viz.dropna(subset=['Bay_formatted', 'Crane', 'Seq.', 'Direction'])
+            gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.', 'Direction']].drop_duplicates()
 
-            # --- PERBAIKAN: Sertakan 'Finish_Time_Hrs' dalam merge ---
             gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.')
-            gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.'], how='left')
+            gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.', 'Direction'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
-            gantt_df['TextLabel'] = 'Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
+            gantt_df['TextLabel'] = gantt_df['Direction'] + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
             gantt_df['Crane'] = gantt_df['Crane'].astype(int).astype(str)
 
             # --- LOGIKA PEWARNAAN ---
@@ -277,11 +280,11 @@ with tab2:
                 title_text="Crane Sequence Gantt Chart",
                 xaxis_title="Bay",
                 yaxis_title="Time",
-                barmode='overlay', # Mengganti 'stack' menjadi 'overlay'
+                barmode='overlay',
                 xaxis={
                     'categoryorder':'array', 
                     'categoryarray': x_axis_order,
-                    'side': 'top' # Memindahkan sumbu X ke atas
+                    'side': 'top'
                 },
                 yaxis={
                     'autorange': 'reversed',
