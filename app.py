@@ -229,37 +229,33 @@ with tab2:
             )
 
             # --- LOGIKA BARU: HITUNG WAKTU KUMULATIF UNTUK GANTT CHART ---
-            # PERBAIKAN: Gunakan kolom 'Mvs' dari Sheet2 sebagai sumber utama durasi
-            if 'Mvs' in df_crane_sheet2_viz.columns:
-                st.info("Calculating sequence duration from 'Mvs' column in Crane Sequence file.")
-                seq_moves = df_crane_sheet2_viz.groupby('Seq.')['Mvs'].sum().reset_index()
-                seq_moves.rename(columns={'Mvs': 'Count'}, inplace=True)
-            else:
-                st.warning("Column 'Mvs' not found in Crane Sequence file. Calculating duration from container list.")
-                seq_moves = area_summary.groupby('Seq.')['Count'].sum().reset_index()
+            # PERBAIKAN: Jadikan jadwal setiap crane independen
+            st.info("Calculating independent sequence duration for each crane from 'Mvs' column.")
 
-            all_seqs_df = pd.DataFrame({'Seq.': df_crane_sheet2_viz['Seq.'].dropna().unique()})
-            seq_moves = pd.merge(all_seqs_df, seq_moves, on='Seq.', how='left').fillna(0)
-            
-            seq_moves = seq_moves.sort_values('Seq.').reset_index(drop=True)
-            seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0)
-            seq_moves['Finish_Time_Hrs'] = seq_moves['Time (hrs)'].cumsum()
-            seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
-            
-            # --- PERSIAPAN DATA UNTUK PLOTLY ---
-            gantt_df_base = df_crane_sheet2_viz.dropna(subset=['Bay_formatted', 'Seq.'])
-            gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.', 'Direction']].drop_duplicates()
+            # 1. Pastikan kolom yang dibutuhkan ada
+            if 'Mvs' not in df_crane_sheet2_viz.columns:
+                st.error("Column 'Mvs' not found in Crane Sequence file. Cannot calculate duration.")
+                st.stop()
 
-            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.', how='left')
+            # 2. Ambil data relevan dan bersihkan
+            gantt_df = df_crane_sheet2_viz[['Crane', 'Seq.', 'Mvs', 'Bay_formatted', 'Direction']].copy()
+            gantt_df.dropna(subset=['Crane', 'Seq.', 'Mvs', 'Bay_formatted'], inplace=True)
+            gantt_df['Crane'] = gantt_df['Crane'].astype(int)
 
-            gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']] = gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']].fillna(0)
-            gantt_df['Crane'] = gantt_df['Crane'].fillna('N/A')
-            gantt_df['Direction'] = gantt_df['Direction'].fillna('N/A')
+            # 3. Hitung durasi dasar untuk setiap tugas
+            gantt_df['Time (hrs)'] = gantt_df['Mvs'] / 30.0
 
+            # 4. Urutkan berdasarkan Crane dan kemudian Seq untuk memastikan perhitungan kumulatif yang benar
+            gantt_df = gantt_df.sort_values(['Crane', 'Seq.'])
+
+            # 5. Hitung waktu mulai dan selesai secara independen untuk setiap crane
+            gantt_df['Finish_Time_Hrs'] = gantt_df.groupby('Crane')['Time (hrs)'].cumsum()
+            gantt_df['Start_Time_Hrs'] = gantt_df['Finish_Time_Hrs'] - gantt_df['Time (hrs)']
+
+            # 6. Gabungkan dengan label area dari lookup
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.', 'Direction'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
-            gantt_df['TextLabel'] = gantt_df['Direction'] + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
-            
+            gantt_df['TextLabel'] = gantt_df['Direction'].fillna('N/A') + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>Mvs: ' + gantt_df['Mvs'].astype(int).astype(str) + '<br>' + gantt_df['Label']
             gantt_df['Crane'] = gantt_df['Crane'].astype(str)
             
             MIN_VISIBLE_DURATION = 0.05
@@ -294,7 +290,8 @@ with tab2:
             x_axis_order = gantt_df['Bay_formatted'].unique().tolist()
             
             start_hour = 8
-            max_finish_time = gantt_df['Finish_Time_Hrs'].max() if not gantt_df['Finish_Time_Hrs'].empty else 0
+            # Hitung waktu selesai maksimum dari semua crane untuk skala sumbu Y yang benar
+            max_finish_time = gantt_df['Finish_Time_Hrs'].max() if not gantt_df.empty else 0
             y_ticks_values = list(range(int(max_finish_time) + 2))
             y_ticks_labels = [f"{(start_hour + h):02d}:00" for h in y_ticks_values]
 
