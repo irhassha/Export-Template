@@ -201,7 +201,7 @@ with tab2:
             df_crane_sheet2_viz = df_crane_sheet2_viz.dropna(subset=['Bay'])
             df_crane_sheet2_viz['Bay_formatted'] = df_crane_sheet2_viz['Bay'].apply(format_bay)
             
-            # --- LOGIKA BARU UNTUK MENGGABUNGKAN AREA DAN JUMLAH BOX ---
+            # --- LOGIKA UNTUK MENGGABUNGKAN AREA DAN JUMLAH BOX ---
             area_summary = (
                 result_df.groupby(['Crane', 'Seq.', 'Area (EXE)'])
                 .size()
@@ -217,6 +217,14 @@ with tab2:
                 .reset_index()
             )
             area_dict = {(row['Crane'], row['Seq.']): row['Label'] for _, row in area_labels.iterrows()}
+            
+            # --- LOGIKA BARU: HITUNG WAKTU BERDASARKAN Mvs (COUNT) ---
+            # Hitung total Mvs (gerakan/container) per Seq. dari area_summary
+            seq_moves = area_summary.groupby('Seq.')['Count'].sum().reset_index()
+            # Hitung waktu dalam jam (1 jam = 30 Mvs)
+            seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0).round(2)
+            # Buat dictionary untuk memetakan Waktu ke Seq.
+            time_dict = pd.Series(seq_moves['Time (hrs)'].values, index=seq_moves['Seq.']).to_dict()
             
             # Fungsi untuk membuat teks tampilan gabungan
             def get_display_value(crane_val, seq_idx):
@@ -238,11 +246,16 @@ with tab2:
                     val = pivot_crane_display.loc[row_idx, col]
                     pivot_crane_display.loc[row_idx, col] = get_display_value(val, row_idx)
 
-            sorted_bays = sorted(pivot_crane.columns, key=lambda x: int(x.split('-')[0]))
-            pivot_crane_display = pivot_crane_display[sorted_bays]
+            # Tambahkan kolom Waktu ke pivot table menggunakan index (Seq.)
+            pivot_crane_display['Time'] = pivot_crane_display.index.map(time_dict).fillna(0)
+            pivot_crane_display['Time'] = pivot_crane_display['Time'].astype(str) + ' hrs'
+
+            # Urutkan kolom bay dan susun ulang DataFrame agar 'Time' di paling kiri
+            sorted_bays = sorted([col for col in pivot_crane_display.columns if col != 'Time'], key=lambda x: int(x.split('-')[0]))
+            pivot_crane_display = pivot_crane_display[['Time'] + sorted_bays]
             
-            # --- LOGIKA PEWARNAAN DI SINI ---
-            unique_cranes = df_crane_sheet2_viz['Crane'].unique()
+            # --- LOGIKA PEWARNAAN ---
+            unique_cranes = df_crane_sheet2_viz['Crane'].dropna().unique()
             crane_colors = ['#8dd3c7','#ffffb3','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9','#bc80bd']
             color_map = {crane: crane_colors[i % len(crane_colors)] for i, crane in enumerate(unique_cranes)}
             
@@ -257,8 +270,9 @@ with tab2:
                     pass
                 return ''
 
+            # Terapkan style hanya pada kolom bay dan tampilkan
             st.dataframe(
-                pivot_crane_display.style.apply(lambda x: x.map(color_crane_cells)),
+                pivot_crane_display.style.apply(lambda x: x.map(color_crane_cells), subset=sorted_bays),
                 use_container_width=True
             )
 
