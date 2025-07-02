@@ -212,7 +212,6 @@ with tab2:
             df_crane_sheet2_viz = pd.read_excel(crane_file_tab2, sheet_name=1)
             df_crane_sheet2_viz.columns = df_crane_sheet2_viz.columns.str.strip()
             df_crane_sheet2_viz.rename(columns={'Main Bay': 'Bay', 'Sequence': 'Seq.', 'QC': 'Crane'}, inplace=True)
-            df_crane_sheet2_viz = df_crane_sheet2_viz.dropna(subset=['Bay'])
             df_crane_sheet2_viz['Bay_formatted'] = df_crane_sheet2_viz['Bay'].apply(format_bay)
             
             # --- LOGIKA UNTUK MENGGABUNGKAN AREA DAN JUMLAH BOX ---
@@ -230,37 +229,48 @@ with tab2:
             )
 
             # --- LOGIKA BARU: HITUNG WAKTU KUMULATIF UNTUK GANTT CHART ---
-            seq_moves = area_summary.groupby('Seq.')['Count'].sum().reset_index()
+            # PERBAIKAN: Gunakan kolom 'Mvs' dari Sheet2 sebagai sumber utama durasi
+            if 'Mvs' in df_crane_sheet2_viz.columns:
+                st.info("Calculating sequence duration from 'Mvs' column in Crane Sequence file.")
+                seq_moves = df_crane_sheet2_viz.groupby('Seq.')['Mvs'].sum().reset_index()
+                seq_moves.rename(columns={'Mvs': 'Count'}, inplace=True)
+            else:
+                st.warning("Column 'Mvs' not found in Crane Sequence file. Calculating duration from container list.")
+                seq_moves = area_summary.groupby('Seq.')['Count'].sum().reset_index()
+
+            all_seqs_df = pd.DataFrame({'Seq.': df_crane_sheet2_viz['Seq.'].dropna().unique()})
+            seq_moves = pd.merge(all_seqs_df, seq_moves, on='Seq.', how='left').fillna(0)
+            
             seq_moves = seq_moves.sort_values('Seq.').reset_index(drop=True)
             seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0)
             seq_moves['Finish_Time_Hrs'] = seq_moves['Time (hrs)'].cumsum()
             seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
             
             # --- PERSIAPAN DATA UNTUK PLOTLY ---
-            # Kurangi batasan dropna, hanya butuh Bay dan Seq untuk merencanakan tugas
             gantt_df_base = df_crane_sheet2_viz.dropna(subset=['Bay_formatted', 'Seq.'])
             gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.', 'Direction']].drop_duplicates()
 
-            # Gunakan 'left' merge untuk memastikan semua sekuens dari rencana (Sheet2) tetap ada
             gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.', how='left')
 
-            # Isi NaN untuk waktu dan kolom lain setelah merge
             gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']] = gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']].fillna(0)
             gantt_df['Crane'] = gantt_df['Crane'].fillna('N/A')
             gantt_df['Direction'] = gantt_df['Direction'].fillna('N/A')
 
-            # Gabungkan dengan label area
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.', 'Direction'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
             gantt_df['TextLabel'] = gantt_df['Direction'] + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
             
-            # Ubah tipe data Crane ke string setelah mengisi NaN
             gantt_df['Crane'] = gantt_df['Crane'].astype(str)
+            
+            MIN_VISIBLE_DURATION = 0.05
+            gantt_df['Plot_Time_hrs'] = gantt_df['Time (hrs)'].apply(lambda x: MIN_VISIBLE_DURATION if x == 0 else x)
 
             # --- LOGIKA PEWARNAAN ---
             unique_cranes = sorted(gantt_df['Crane'].dropna().unique())
-            crane_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            crane_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf', '#999999']
             color_map = {crane: crane_colors[i % len(crane_colors)] for i, crane in enumerate(unique_cranes)}
+            if 'N/A' not in color_map:
+                color_map['N/A'] = '#999999'
 
             # --- BUAT GANTT CHART DENGAN PLOTLY (VERTICAL) ---
             fig = go.Figure()
@@ -269,7 +279,7 @@ with tab2:
                 crane_df = gantt_df[gantt_df['Crane'] == crane]
                 fig.add_trace(go.Bar(
                     x=crane_df['Bay_formatted'],
-                    y=crane_df['Time (hrs)'],
+                    y=crane_df['Plot_Time_hrs'],
                     base=crane_df['Start_Time_Hrs'],
                     name=f'Crane {crane}',
                     marker_color=color_map.get(crane),
@@ -284,7 +294,6 @@ with tab2:
             x_axis_order = gantt_df['Bay_formatted'].unique().tolist()
             
             start_hour = 8
-            # Pastikan ada data untuk dihitung max(), jika tidak, gunakan nilai default
             max_finish_time = gantt_df['Finish_Time_Hrs'].max() if not gantt_df['Finish_Time_Hrs'].empty else 0
             y_ticks_values = list(range(int(max_finish_time) + 2))
             y_ticks_labels = [f"{(start_hour + h):02d}:00" for h in y_ticks_values]
