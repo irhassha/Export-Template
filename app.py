@@ -229,30 +229,38 @@ with tab2:
             )
 
             # --- LOGIKA BARU: HITUNG WAKTU KUMULATIF UNTUK GANTT CHART ---
-            # PERBAIKAN: Jadikan jadwal setiap crane independen
-            st.info("Calculating independent sequence duration for each crane from 'Mvs' column.")
+            st.info("Calculating independent and continuous sequence duration for each crane from 'Mvs' column.")
 
-            # 1. Pastikan kolom yang dibutuhkan ada
             if 'Mvs' not in df_crane_sheet2_viz.columns:
                 st.error("Column 'Mvs' not found in Crane Sequence file. Cannot calculate duration.")
                 st.stop()
 
-            # 2. Ambil data relevan dan bersihkan
-            gantt_df = df_crane_sheet2_viz[['Crane', 'Seq.', 'Mvs', 'Bay_formatted', 'Direction']].copy()
-            gantt_df.dropna(subset=['Crane', 'Seq.', 'Mvs', 'Bay_formatted'], inplace=True)
-            gantt_df['Crane'] = gantt_df['Crane'].astype(int)
+            # 1. Buat DataFrame tugas unik (Crane, Seq) untuk perhitungan waktu
+            tasks_df = df_crane_sheet2_viz[['Crane', 'Seq.', 'Mvs']].copy()
+            tasks_df.dropna(subset=['Crane', 'Seq.', 'Mvs'], inplace=True)
+            tasks_df = tasks_df.drop_duplicates(subset=['Crane', 'Seq.'])
+            tasks_df['Crane'] = tasks_df['Crane'].astype(int)
 
-            # 3. Hitung durasi dasar untuk setiap tugas
-            gantt_df['Time (hrs)'] = gantt_df['Mvs'] / 30.0
+            # 2. Hitung durasi dan jadwal kontinu untuk setiap crane secara terpisah
+            tasks_df['Time (hrs)'] = tasks_df['Mvs'] / 30.0
+            tasks_df = tasks_df.sort_values(['Crane', 'Seq.'])
+            tasks_df['Finish_Time_Hrs'] = tasks_df.groupby('Crane')['Time (hrs)'].cumsum()
+            tasks_df['Start_Time_Hrs'] = tasks_df['Finish_Time_Hrs'] - tasks_df['Time (hrs)']
 
-            # 4. Urutkan berdasarkan Crane dan kemudian Seq untuk memastikan perhitungan kumulatif yang benar
-            gantt_df = gantt_df.sort_values(['Crane', 'Seq.'])
+            # 3. Siapkan data dasar untuk plotting (termasuk semua lokasi Bay per tugas)
+            plot_base_df = df_crane_sheet2_viz[['Crane', 'Seq.', 'Bay_formatted', 'Direction']].copy()
+            plot_base_df.dropna(subset=['Crane', 'Seq.', 'Bay_formatted'], inplace=True)
+            plot_base_df['Crane'] = plot_base_df['Crane'].astype(int)
+            plot_base_df = plot_base_df.drop_duplicates()
 
-            # 5. Hitung waktu mulai dan selesai secara independen untuk setiap crane
-            gantt_df['Finish_Time_Hrs'] = gantt_df.groupby('Crane')['Time (hrs)'].cumsum()
-            gantt_df['Start_Time_Hrs'] = gantt_df['Finish_Time_Hrs'] - gantt_df['Time (hrs)']
+            # 4. Gabungkan data plot dengan jadwal yang sudah dihitung
+            gantt_df = pd.merge(
+                plot_base_df,
+                tasks_df, # Mengandung Mvs, Time (hrs), Start_Time_Hrs, Finish_Time_Hrs
+                on=['Crane', 'Seq.']
+            )
 
-            # 6. Gabungkan dengan label area dari lookup
+            # 5. Gabungkan dengan label area dari lookup
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.', 'Direction'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
             gantt_df['TextLabel'] = gantt_df['Direction'].fillna('N/A') + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>Mvs: ' + gantt_df['Mvs'].astype(int).astype(str) + '<br>' + gantt_df['Label']
