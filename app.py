@@ -4,6 +4,8 @@ import os
 from datetime import datetime, timedelta
 import json
 import io
+import plotly.express as px
+import traceback
 
 # Import pustaka yang diperlukan
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
@@ -47,6 +49,9 @@ with tab1:
 
     if 'processed_df' not in st.session_state:
         st.session_state.processed_df = None
+    
+    if 'display_df' not in st.session_state:
+        st.session_state.display_df = None
 
     df_vessel_codes = load_vessel_codes_from_repo()
 
@@ -99,6 +104,10 @@ with tab1:
                     st.session_state.processed_df = None
         else:
             st.warning("Please upload both 'Vessel Schedule' and 'Unit List' files.")
+    
+    if st.session_state.processed_df is not None:
+        st.dataframe(st.session_state.processed_df, use_container_width=True)
+
 
 # --- KONTEN TAB 2 ---
 with tab2:
@@ -207,76 +216,72 @@ with tab2:
                 .size()
                 .reset_index(name='Count')
             )
-            # Buat label seperti "A01 (5)"
             area_summary['Label'] = area_summary['Area (EXE)'] + ' (' + area_summary['Count'].astype(str) + ')'
             
-            # Gabungkan semua label untuk setiap Crane dan Seq.
             area_labels = (
                 area_summary.groupby(['Crane', 'Seq.'])['Label']
                 .apply(lambda x: '\n'.join(sorted(x)))
                 .reset_index()
             )
-            area_dict = {(row['Crane'], row['Seq.']): row['Label'] for _, row in area_labels.iterrows()}
-            
-            # --- LOGIKA BARU: HITUNG WAKTU BERDASARKAN Mvs (COUNT) ---
-            # Hitung total Mvs (gerakan/container) per Seq. dari area_summary
+
+            # --- LOGIKA BARU: HITUNG WAKTU KUMULATIF UNTUK GANTT CHART ---
             seq_moves = area_summary.groupby('Seq.')['Count'].sum().reset_index()
-            # Hitung waktu dalam jam (1 jam = 30 Mvs)
-            seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0).round(2)
-            # Buat dictionary untuk memetakan Waktu ke Seq.
-            time_dict = pd.Series(seq_moves['Time (hrs)'].values, index=seq_moves['Seq.']).to_dict()
-            
-            # Fungsi untuk membuat teks tampilan gabungan
-            def get_display_value(crane_val, seq_idx):
-                try:
-                    if pd.isna(crane_val) or crane_val == '': return ''
-                    crane = float(crane_val)
-                    area_info = area_dict.get((crane, seq_idx), 'N/A')
-                    return f"{int(crane)}\n({area_info})"
-                except:
-                    return crane_val
-            
-            # Buat Pivot Table dasar
-            pivot_crane = df_crane_sheet2_viz.pivot(index='Seq.', columns='Bay_formatted', values='Crane').fillna('')
-            
-            # Buat DataFrame baru untuk ditampilkan
-            pivot_crane_display = pivot_crane.copy()
-            for row_idx in pivot_crane_display.index:
-                for col in pivot_crane_display.columns:
-                    val = pivot_crane_display.loc[row_idx, col]
-                    pivot_crane_display.loc[row_idx, col] = get_display_value(val, row_idx)
+            seq_moves = seq_moves.sort_values('Seq.').reset_index(drop=True)
+            seq_moves['Time (hrs)'] = (seq_moves['Count'] / 30.0)
+            seq_moves['Finish_Time_Hrs'] = seq_moves['Time (hrs)'].cumsum()
+            seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
 
-            # Tambahkan kolom Waktu ke pivot table menggunakan index (Seq.)
-            pivot_crane_display['Time'] = pivot_crane_display.index.map(time_dict).fillna(0)
-            pivot_crane_display['Time'] = pivot_crane_display['Time'].astype(str) + ' hrs'
+            start_datetime = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
 
-            # Urutkan kolom bay dan susun ulang DataFrame agar 'Time' di paling kiri
-            sorted_bays = sorted([col for col in pivot_crane_display.columns if col != 'Time'], key=lambda x: int(x.split('-')[0]))
-            pivot_crane_display = pivot_crane_display[['Time'] + sorted_bays]
-            
+            seq_moves['Start'] = seq_moves['Start_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
+            seq_moves['Finish'] = seq_moves['Finish_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
+
+            # --- PERSIAPAN DATA UNTUK PLOTLY ---
+            gantt_df_base = df_crane_sheet2_viz[df_crane_sheet2_viz['Direction'] == 'Loading'].dropna(subset=['Bay_formatted', 'Crane', 'Seq.'])
+            gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.']].drop_duplicates()
+
+            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start', 'Finish']], on='Seq.')
+            gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.'], how='left')
+            gantt_df['Label'] = gantt_df['Label'].fillna('N/A').str.replace('\n', ', ')
+            gantt_df['Crane'] = gantt_df['Crane'].astype(int).astype(str)
+
             # --- LOGIKA PEWARNAAN ---
-            unique_cranes = df_crane_sheet2_viz['Crane'].dropna().unique()
-            crane_colors = ['#8dd3c7','#ffffb3','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9','#bc80bd']
+            unique_cranes = sorted(gantt_df['Crane'].dropna().unique())
+            crane_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
             color_map = {crane: crane_colors[i % len(crane_colors)] for i, crane in enumerate(unique_cranes)}
-            
-            def color_crane_cells(val):
-                # Ekstrak nama crane dari teks gabungan
-                crane_name_str = str(val).split('\n')[0]
-                try:
-                    crane_name = float(crane_name_str)
-                    if crane_name in color_map:
-                        return f'background-color: {color_map[crane_name]}'
-                except (ValueError, TypeError):
-                    pass
-                return ''
 
-            # Terapkan style hanya pada kolom bay dan tampilkan
-            st.dataframe(
-                pivot_crane_display.style.apply(lambda x: x.map(color_crane_cells), subset=sorted_bays),
-                use_container_width=True
+            # --- BUAT GANTT CHART DENGAN PLOTLY ---
+            gantt_df['sort_key'] = gantt_df['Bay_formatted'].str.split('-').str[0].astype(int)
+            gantt_df = gantt_df.sort_values(['sort_key', 'Start']).reset_index(drop=True)
+            y_axis_order = gantt_df['Bay_formatted'].unique().tolist()
+
+            fig = px.timeline(
+                gantt_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Bay_formatted",
+                color="Crane",
+                text="Label",
+                title="Crane Sequence Gantt Chart",
+                color_discrete_map=color_map
             )
+
+            fig.update_layout(
+                xaxis_title="Time",
+                yaxis_title="Bay",
+                yaxis={'categoryorder':'array', 'categoryarray': y_axis_order[::-1]},
+                title_font_size=20,
+                font_size=12,
+                height=800,
+                legend_title_text='Crane'
+            )
+            fig.update_traces(textposition='inside', textfont_size=10)
+            fig.update_xaxes(type='date')
+
+            st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
             st.error(f"Failed to process Crane Sequence Visualizer: {e}")
+            st.error(traceback.format_exc())
     elif crane_file_tab2:
         st.info("Upload the 'Unit List' file to see the combined visualizer.")
