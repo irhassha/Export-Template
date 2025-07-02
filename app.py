@@ -237,14 +237,25 @@ with tab2:
             seq_moves['Start_Time_Hrs'] = seq_moves['Finish_Time_Hrs'] - seq_moves['Time (hrs)']
             
             # --- PERSIAPAN DATA UNTUK PLOTLY ---
-            gantt_df_base = df_crane_sheet2_viz.dropna(subset=['Bay_formatted', 'Crane', 'Seq.', 'Direction'])
+            # Kurangi batasan dropna, hanya butuh Bay dan Seq untuk merencanakan tugas
+            gantt_df_base = df_crane_sheet2_viz.dropna(subset=['Bay_formatted', 'Seq.'])
             gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.', 'Direction']].drop_duplicates()
 
-            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.')
+            # Gunakan 'left' merge untuk memastikan semua sekuens dari rencana (Sheet2) tetap ada
+            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']], on='Seq.', how='left')
+
+            # Isi NaN untuk waktu dan kolom lain setelah merge
+            gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']] = gantt_df[['Start_Time_Hrs', 'Time (hrs)', 'Finish_Time_Hrs']].fillna(0)
+            gantt_df['Crane'] = gantt_df['Crane'].fillna('N/A')
+            gantt_df['Direction'] = gantt_df['Direction'].fillna('N/A')
+
+            # Gabungkan dengan label area
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.', 'Direction'], how='left')
             gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
             gantt_df['TextLabel'] = gantt_df['Direction'] + '<br>Seq: ' + gantt_df['Seq.'].astype(str) + '<br>' + gantt_df['Label']
-            gantt_df['Crane'] = gantt_df['Crane'].astype(int).astype(str)
+            
+            # Ubah tipe data Crane ke string setelah mengisi NaN
+            gantt_df['Crane'] = gantt_df['Crane'].astype(str)
 
             # --- LOGIKA PEWARNAAN ---
             unique_cranes = sorted(gantt_df['Crane'].dropna().unique())
@@ -261,7 +272,7 @@ with tab2:
                     y=crane_df['Time (hrs)'],
                     base=crane_df['Start_Time_Hrs'],
                     name=f'Crane {crane}',
-                    marker_color=color_map[crane],
+                    marker_color=color_map.get(crane),
                     text=crane_df['TextLabel'],
                     textposition='inside',
                     insidetextanchor='middle'
@@ -273,7 +284,9 @@ with tab2:
             x_axis_order = gantt_df['Bay_formatted'].unique().tolist()
             
             start_hour = 8
-            y_ticks_values = list(range(int(gantt_df['Finish_Time_Hrs'].max()) + 2))
+            # Pastikan ada data untuk dihitung max(), jika tidak, gunakan nilai default
+            max_finish_time = gantt_df['Finish_Time_Hrs'].max() if not gantt_df['Finish_Time_Hrs'].empty else 0
+            y_ticks_values = list(range(int(max_finish_time) + 2))
             y_ticks_labels = [f"{(start_hour + h):02d}:00" for h in y_ticks_values]
 
             fig.update_layout(
