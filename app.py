@@ -251,7 +251,9 @@ with tab2:
             plot_base_df = df_crane_sheet2_viz[['Crane', 'Seq.', 'Bay_formatted', 'Direction']].copy()
             plot_base_df.dropna(subset=['Crane', 'Seq.', 'Bay_formatted'], inplace=True)
             plot_base_df['Crane'] = plot_base_df['Crane'].astype(int)
-            plot_base_df = plot_base_df.drop_duplicates()
+            
+            # PERBAIKAN: Jangan drop_duplicates di sini agar semua lokasi bay tetap ada
+            # plot_base_df = plot_base_df.drop_duplicates()
 
             # 4. Gabungkan data plot dengan jadwal yang sudah dihitung
             gantt_df = pd.merge(
