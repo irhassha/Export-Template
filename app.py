@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import json
 import io
 import plotly.express as px
+import plotly.graph_objects as go
 import traceback
 
 # Import pustaka yang diperlukan
@@ -220,7 +221,7 @@ with tab2:
             
             area_labels = (
                 area_summary.groupby(['Crane', 'Seq.'])['Label']
-                .apply(lambda x: '\n'.join(sorted(x)))
+                .apply(lambda x: '<br>'.join(sorted(x)))
                 .reset_index()
             )
 
@@ -235,14 +236,15 @@ with tab2:
 
             seq_moves['Start'] = seq_moves['Start_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
             seq_moves['Finish'] = seq_moves['Finish_Time_Hrs'].apply(lambda h: start_datetime + timedelta(hours=h))
+            seq_moves['Duration'] = seq_moves['Finish'] - seq_moves['Start']
 
             # --- PERSIAPAN DATA UNTUK PLOTLY ---
             gantt_df_base = df_crane_sheet2_viz[df_crane_sheet2_viz['Direction'] == 'Loading'].dropna(subset=['Bay_formatted', 'Crane', 'Seq.'])
             gantt_df_base = gantt_df_base[['Bay_formatted', 'Crane', 'Seq.']].drop_duplicates()
 
-            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start', 'Finish']], on='Seq.')
+            gantt_df = pd.merge(gantt_df_base, seq_moves[['Seq.', 'Start', 'Duration']], on='Seq.')
             gantt_df = pd.merge(gantt_df, area_labels, on=['Crane', 'Seq.'], how='left')
-            gantt_df['Label'] = gantt_df['Label'].fillna('N/A').str.replace('\n', ', ')
+            gantt_df['Label'] = gantt_df['Label'].fillna('N/A')
             gantt_df['Crane'] = gantt_df['Crane'].astype(int).astype(str)
 
             # --- LOGIKA PEWARNAAN ---
@@ -250,33 +252,40 @@ with tab2:
             crane_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
             color_map = {crane: crane_colors[i % len(crane_colors)] for i, crane in enumerate(unique_cranes)}
 
-            # --- BUAT GANTT CHART DENGAN PLOTLY ---
-            gantt_df['sort_key'] = gantt_df['Bay_formatted'].str.split('-').str[0].astype(int)
-            gantt_df = gantt_df.sort_values(['sort_key', 'Start']).reset_index(drop=True)
-            y_axis_order = gantt_df['Bay_formatted'].unique().tolist()
+            # --- BUAT GANTT CHART DENGAN PLOTLY (VERTICAL) ---
+            fig = go.Figure()
 
-            fig = px.timeline(
-                gantt_df,
-                x_start="Start",
-                x_end="Finish",
-                y="Bay_formatted",
-                color="Crane",
-                text="Label",
-                title="Crane Sequence Gantt Chart",
-                color_discrete_map=color_map
-            )
+            for crane in unique_cranes:
+                crane_df = gantt_df[gantt_df['Crane'] == crane]
+                fig.add_trace(go.Bar(
+                    x=crane_df['Bay_formatted'],
+                    y=crane_df['Duration'],
+                    base=crane_df['Start'],
+                    name=f'Crane {crane}',
+                    marker_color=color_map[crane],
+                    text=crane_df['Label'],
+                    textposition='inside',
+                    insidetextanchor='middle'
+                ))
+
+            # --- PENGURUTAN SUMBU X (BAY) ---
+            gantt_df['sort_key'] = gantt_df['Bay_formatted'].str.split('-').str[0].astype(int)
+            gantt_df = gantt_df.sort_values('sort_key')
+            x_axis_order = gantt_df['Bay_formatted'].unique().tolist()
 
             fig.update_layout(
-                xaxis_title="Time",
-                yaxis_title="Bay",
-                yaxis={'categoryorder':'array', 'categoryarray': y_axis_order[::-1]},
+                title_text="Crane Sequence Gantt Chart",
+                xaxis_title="Bay",
+                yaxis_title="Time",
+                barmode='stack',
+                xaxis={'categoryorder':'array', 'categoryarray': x_axis_order},
+                yaxis_autorange='reversed',
                 title_font_size=20,
                 font_size=12,
                 height=800,
                 legend_title_text='Crane'
             )
-            fig.update_traces(textposition='inside', textfont_size=10)
-            fig.update_xaxes(type='date')
+            fig.update_traces(textfont_size=10)
 
             st.plotly_chart(fig, use_container_width=True)
 
