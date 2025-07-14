@@ -81,18 +81,28 @@ with st.sidebar:
         cluster_req_logic = 'Agresif'
 
 # --- Main App Logic ---
+# VERSI BARU DENGAN PERBAIKAN
 if uploaded_file:
     try:
-        # --- PERUBAHAN 1: MEMBACA FILE DENGAN PARSING TANGGAL ---
+        # 1. Baca file Excel seperti biasa tanpa parsing tanggal
+        df_schedule = pd.read_excel(uploaded_file) 
+        
+        # 2. Konversi kolom tanggal secara manual SETELAH file dibaca
         date_cols = ['OPEN STACKING', 'ETA', 'ETD']
-        # Membaca file dan langsung mengubah kolom tanggal menjadi tipe datetime
-        df_schedule = pd.read_excel(uploaded_file, parse_dates=date_cols, dayfirst=True)
-        
-        # Membersihkan data 'TOTAL BOX (TEUS)'
+        for col in date_cols:
+            # Gunakan dayfirst=True di sini, pada fungsi to_datetime yang benar
+            # errors='coerce' akan mengubah tanggal yang salah format menjadi NaT (kosong)
+            df_schedule[col] = pd.to_datetime(df_schedule[col], dayfirst=True, errors='coerce')
+
+        # 3. Membersihkan data 'TOTAL BOX (TEUS)'
         df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
-        
+
+        # 4. Hapus baris yang tanggalnya kosong (jika ada kesalahan format di file asli)
+        df_schedule.dropna(subset=date_cols, inplace=True)
+
         st.subheader("Data Vessel Schedule yang Di-upload (Sudah diproses)")
         st.dataframe(df_schedule)
+        # ... sisa kode ...
         # --- AKHIR PERUBAHAN 1 ---
 
         df_trends = load_stacking_trends(STACKING_TREND_URL)
