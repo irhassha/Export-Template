@@ -122,22 +122,270 @@ if uploaded_file:
                     daily_occupancy_data = []
 
                     # --- PERUBAHAN 3: LOOPING BERBASIS TANGGAL ---
-                    for current_date in date_range:
-                        # Di sini akan ada logika simulasi inti yang berjalan per tanggal
-                        # 1. Cek kapal mana yang ETD-nya sudah lewat untuk mengosongkan slot.
-                        # 2. Cek kapal mana yang sedang aktif (current_date di antara Open Stacking & ETD).
-                        # 3. Hitung kontainer masuk untuk kapal aktif pada current_date.
-                        # 4. Jalankan logika alokasi dengan semua aturan.
+                    # ==============================================================================
+                    #           MULAI SALIN KODE DARI SINI
+                    # ==============================================================================
+                    
+                    # --- FUNGSI-FUNGSI HELPER UNTUK LOGIKA SIMULASI ---
+                    
+                    def initialize_yard(config):
+                        """Membuat representasi yard dari konfigurasi."""
+                        yard_slots = {}
+                        for area, num_slots in config.items():
+                            for i in range(1, num_slots + 1):
+                                yard_slots[(area, i)] = None  # None berarti slot kosong
+                        return yard_slots
+                    
+                    def get_slot_index(slot, yard_config_map):
+                        """Mendapatkan index numerik unik untuk setiap slot di seluruh yard."""
+                        area, number = slot
+                        return yard_config_map[area]['offset'] + number - 1
+                    
+                    def get_slot_from_index(index, yard_config_map_rev):
+                        """Mendapatkan nama slot dari index numerik unik."""
+                        area_name = yard_config_map_rev[max(k for k in yard_config_map_rev if k <= index)]
+                        offset = max(k for k in yard_config_map_rev if k <= index)
+                        return (area_name, index - offset + 1)
+                    
+                    def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules, yard_config_map):
+                        """
+                        Fungsi paling krusial: mencari slot mana saja yang valid untuk ditempati
+                        dengan memeriksa SEMUA aturan jarak dan zona.
+                        """
+                        # 1. Dapatkan semua slot yang secara fisik kosong
+                        free_slots = {slot for slot, owner in yard_status.items() if owner is None}
                         
-                        # Data dummy untuk YOR
-                        # Dalam simulasi nyata, angka ini adalah hasil kalkulasi dari yard status
-                        total_boxes_in_yard = np.random.randint(3000, 14000) 
-                        occupancy_ratio = (total_boxes_in_yard / (468 * 30)) * 100
-                        daily_occupancy_data.append({
-                            'Tanggal': current_date,
-                            'Total Box di Yard': total_boxes_in_yard,
-                            'Rasio Okupansi (%)': occupancy_ratio
-                        })
+                        # 2. Tentukan slot mana yang diblokir oleh aturan
+                        blocked_indices = set()
+                        active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date < ship['etd_date']]
+                    
+                        for ship in active_ships:
+                            # Jangan cek terhadap diri sendiri
+                            if ship['name'] == current_ship['name']:
+                                continue
+                    
+                            # Aturan 3: Zona Eksklusif Harian (7 slot) - BERLAKU UNTUK SEMUA KAPAL AKTIF LAINNYA
+                            for cluster in ship['clusters']:
+                                if not cluster: continue
+                                cluster_indices = [get_slot_index(s, yard_config_map) for s in cluster]
+                                min_idx, max_idx = min(cluster_indices), max(cluster_indices)
+                                for i in range(min_idx - rules['daily_exclusion_zone'], max_idx + rules['daily_exclusion_zone'] + 1):
+                                    blocked_indices.add(i)
+                    
+                            # Aturan 2: Jarak Eksternal Kapal (10 slot) - HANYA JIKA ETD <= 1 HARI
+                            etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
+                            if etd_diff <= 1:
+                                for cluster in ship['clusters']:
+                                    if not cluster: continue
+                                    cluster_indices = [get_slot_index(s, yard_config_map) for s in cluster]
+                                    min_idx, max_idx = min(cluster_indices), max(cluster_indices)
+                                    for i in range(min_idx - rules['inter_ship_gap'], max_idx + rules['inter_ship_gap'] + 1):
+                                        blocked_indices.add(i)
+                    
+                        # 3. Hasil akhirnya adalah slot kosong yang tidak diblokir
+                        placeable_slots = {slot for slot in free_slots if get_slot_index(slot, yard_config_map) not in blocked_indices}
+                        return sorted(list(placeable_slots), key=lambda s: get_slot_index(s, yard_config_map))
+                    
+                    
+                    # --- FUNGSI UTAMA YANG AKAN DIPANGGIL OLEH STREAMLIT ---
+                    
+                    def run_simulation(df_schedule, df_trends, rules):
+                        """Fungsi utama untuk menjalankan seluruh proses simulasi."""
+                    
+                        # 1. Inisialisasi Yard
+                        yard_config = DEFAULT_YARD_CONFIG
+                        yard_status = initialize_yard(yard_config)
+                        slot_capacity = DEFAULT_SLOT_CAPACITY
+                        
+                        # Membuat peta index untuk konversi slot <-> index (untuk performa)
+                        offset = 0
+                        yard_config_map = {}
+                        for area, num_slots in yard_config.items():
+                            yard_config_map[area] = {'offset': offset, 'size': num_slots}
+                            offset += num_slots
+                        
+                        yard_config_map_rev = {data['offset']: area for area, data in yard_config_map.items()}
+                    
+                        # 2. Inisialisasi Kapal
+                        vessels = {}
+                        for _, row in df_schedule.iterrows():
+                            ship_name = row['VESSEL']
+                            start_date = row['OPEN STACKING'].normalize()
+                            etd_date = row['ETD'].normalize()
+                            num_days = (etd_date - start_date).days + 1
+                    
+                            vessels[ship_name] = {
+                                'name': ship_name,
+                                'service': row['SERVICE'],
+                                'total_boxes': row['TOTAL BOX (TEUS)'],
+                                'start_date': start_date,
+                                'etd_date': etd_date,
+                                'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days),
+                                'clusters': [],
+                                'boxes_allocated': 0
+                            }
+                        
+                        # 3. Loop Simulasi Harian
+                        start_date_sim = df_schedule['OPEN STACKING'].min().normalize()
+                        end_date_sim = df_schedule['ETD'].max().normalize()
+                        date_range = pd.date_range(start=start_date_sim, end=end_date_sim, freq='D')
+                        
+                        daily_log = []
+                        
+                        for current_date in date_range:
+                            # A. Kosongkan slot dari kapal yang sudah berangkat
+                            for ship in vessels.values():
+                                if current_date > ship['etd_date']:
+                                    for cluster in ship['clusters']:
+                                        for slot in cluster:
+                                            if yard_status[slot] == ship['name']:
+                                                yard_status[slot] = None
+                                    ship['clusters'] = [[]] # Reset cluster setelah kapal pergi
+                    
+                            # B. Alokasikan untuk kapal yang aktif
+                            active_ships_today = [ship for ship in vessels.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
+                            
+                            for ship in active_ships_today:
+                                day_index = (current_date - ship['start_date']).days
+                                boxes_to_allocate_today = ship['daily_arrivals'][day_index]
+                                slots_needed = int(np.ceil(boxes_to_allocate_today / slot_capacity))
+                                
+                                if slots_needed == 0:
+                                    continue
+                    
+                                # Di sinilah logika Level 1, 2, 3 akan berjalan.
+                                # Untuk sekarang kita implementasikan Level 1 secara langsung.
+                                
+                                # Cari slot yang valid HARI INI
+                                placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules, yard_config_map)
+                                
+                                # --- LOGIKA ALOKASI ---
+                                # (Ini adalah versi sederhana dari logika alokasi Level 1)
+                                slots_allocated_today = []
+                                if len(placeable_slots) >= slots_needed:
+                                    # Ambil N slot pertama yang tersedia
+                                    slots_to_fill = placeable_slots[:slots_needed]
+                                    
+                                    # Masukkan ke cluster pertama, atau buat jika belum ada
+                                    if not ship['clusters']:
+                                        ship['clusters'].append([])
+                                    
+                                    ship['clusters'][0].extend(slots_to_fill)
+                                    
+                                    for slot in slots_to_fill:
+                                        yard_status[slot] = ship['name']
+                                    
+                                    slots_allocated_today = slots_to_fill
+                    
+                                
+                                # Catat hasil
+                                ship['boxes_allocated'] += len(slots_allocated_today) * slot_capacity
+                                
+                                daily_log.append({
+                                    'Tanggal': current_date.strftime('%Y-%m-%d'),
+                                    'Kapal': ship['name'],
+                                    'Butuh Slot': slots_needed,
+                                    'Slot Berhasil': len(slots_allocated_today),
+                                    'Slot Gagal': slots_needed - len(slots_allocated_today)
+                                })
+                    
+                        # 4. Agregasi Hasil Akhir untuk Tampilan
+                        df_daily_log = pd.DataFrame(daily_log)
+                        
+                        # Hitung YOR
+                        yor_data = []
+                        for date in date_range:
+                            occupied_slots = sum(1 for status in yard_status.values() if status is not None)
+                            total_slots = len(yard_status)
+                            yor_data.append({
+                                'Tanggal': date,
+                                'Rasio Okupansi (%)': (occupied_slots / total_slots) * 100
+                            })
+                        df_yor = pd.DataFrame(yor_data)
+                    
+                        # Hitung Rekapitulasi Final
+                        recap_list = []
+                        for ship in vessels.values():
+                            total_requested = ship['total_boxes']
+                            # Perhitungan berhasil lebih akurat
+                            successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
+                            boxes_successful = successful_slots * slot_capacity
+                            
+                            recap_list.append({
+                                'Kapal': ship['name'],
+                                'Permintaan Box': total_requested,
+                                'Box Berhasil': boxes_successful,
+                                'Box Gagal': total_requested - boxes_successful
+                            })
+                        df_recap = pd.DataFrame(recap_list)
+                    
+                        # Buat Peta Alokasi
+                        map_list = []
+                        for ship in vessels.values():
+                            if not ship['clusters'][0]: continue # Jangan tampilkan kapal tanpa alokasi
+                            
+                            # Logika sederhana untuk merangkum range slot
+                            ship['clusters'][0].sort(key=lambda s: get_slot_index(s, yard_config_map))
+                            start_slot = f"{ship['clusters'][0][0][0]}:{ship['clusters'][0][0][1]}"
+                            end_slot = f"{ship['clusters'][0][-1][0]}:{ship['clusters'][0][-1][1]}"
+                    
+                            map_list.append({
+                                'Kapal': ship['name'],
+                                'Cluster': 'Cluster 1', # Logika dummy saat ini hanya membuat 1 cluster
+                                'Lokasi Area': ship['clusters'][0][0][0],
+                                'Alokasi Slot': f"{start_slot} - {end_slot}"
+                            })
+                        df_map = pd.DataFrame(map_list)
+                    
+                        return df_yor, df_recap, df_map, df_daily_log
+                    
+                    
+                    # --- BAGIAN UTAMA YANG MEMANGGIL SEMUA FUNGSI ---
+                    
+                    with st.spinner("Menjalankan simulasi kompleks berbasis tanggal... Ini mungkin memakan waktu beberapa saat."):
+                        # Siapkan parameter aturan berdasarkan pilihan user
+                        sim_rules = {
+                            'intra_ship_gap': intra_ship_gap,
+                            'inter_ship_gap': inter_ship_gap,
+                            'daily_exclusion_zone': daily_exclusion_zone,
+                            'cluster_req_logic': cluster_req_logic
+                            # Tambahkan parameter lain jika ada
+                        }
+                    
+                        # Jalankan fungsi simulasi utama
+                        df_yor, df_recap, df_map, df_daily_log = run_simulation(df_schedule, df_trends, sim_rules)
+                    
+                        st.success(f"Simulasi Selesai! Dijalankan menggunakan **{rule_level}**.")
+                    
+                        # --- Tampilkan Semua Output ---
+                        st.header("📊 Yard Occupancy Ratio (YOR) Harian")
+                        if not df_yor.empty:
+                            st.line_chart(df_yor.set_index('Tanggal')['Rasio Okupansi (%)'])
+                            st.dataframe(df_yor)
+                        else:
+                            st.info("Tidak ada data YOR untuk ditampilkan.")
+                    
+                        st.header("📋 Rekapitulasi Alokasi Final")
+                        if not df_recap.empty:
+                            st.dataframe(df_recap)
+                        else:
+                            st.info("Tidak ada data rekapitulasi untuk ditampilkan.")
+                    
+                        st.header("🗺️ Peta Alokasi Akhir (Detail Slot)")
+                        if not df_map.empty:
+                            st.dataframe(df_map)
+                        else:
+                            st.info("Tidak ada data peta alokasi untuk ditampilkan.")
+                            
+                        st.header("📓 Log Alokasi Harian")
+                        if not df_daily_log.empty:
+                            st.dataframe(df_daily_log)
+                        else:
+                            st.info("Tidak ada data log harian untuk ditampilkan.")
+                    
+                    # ==============================================================================
+                    #           SELESAI SALIN KODE DI SINI
+                    # ==============================================================================
                     # --- AKHIR PERUBAHAN 3 ---
 
                     # --- Output 1: YOR Harian ---
