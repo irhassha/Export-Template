@@ -14,7 +14,7 @@ DEFAULT_YARD_CONFIG = {
 DEFAULT_SLOT_CAPACITY = 30
 
 # URL File Stacking Trend dari GitHub
-STACKING_TREND_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trends.xlsx'
+STACKING_TREND_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trend.xlsx'
 
 @st.cache_data
 def load_stacking_trends(url):
