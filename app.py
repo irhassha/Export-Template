@@ -13,57 +13,49 @@ DEFAULT_YARD_CONFIG = {
 }
 DEFAULT_SLOT_CAPACITY = 30
 
-# URL File Stacking trends dari GitHub (GANTI DENGAN URL ANDA)
-STACKING_trends_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trends.xlsx' 
-# Contoh: 'https://raw.githubusercontent.com/namauser/namarepo/main/stacking_trends.xlsx'
+# URL File Stacking Trend dari GitHub
+STACKING_TREND_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trends.xlsx'
 
 @st.cache_data
 def load_stacking_trends(url):
-    """Memuat dan cache data stacking trends dari URL GitHub."""
+    """Memuat dan cache data stacking trend dari URL GitHub."""
     try:
         df = pd.read_excel(url)
-        # Ganti nama kolom 'STACKING trends' menjadi 'SERVICE' agar konsisten
-        df.rename(columns={'STACKING trends': 'SERVICE'}, inplace=True)
+        df.rename(columns={'STACKING TREND': 'SERVICE'}, inplace=True)
         return df.set_index('SERVICE')
     except Exception as e:
-        st.error(f"Gagal memuat file stacking trends dari URL. Pastikan URL raw sudah benar. Error: {e}")
+        st.error(f"Gagal memuat file stacking trend dari URL. Pastikan URL raw sudah benar. Error: {e}")
         return None
 
-# VERSI BARU DENGAN PERBAIKAN
-def get_daily_arrivals(total_boxes, service_name, trends_df, num_days=7):
+# Fungsi ini tetap sama, namun sekarang num_days akan dihitung secara dinamis
+def get_daily_arrivals(total_boxes, service_name, trends_df, num_days):
     """Menghitung jumlah box harian berdasarkan tren atau rata-rata."""
-    if service_name in trends_df.index:
-        percentages = trends_df.loc[service_name, [f'DAY {i}' for i in range(num_days)]].values
-        # Konversi ke numerik, jika error (misal sel kosong) akan menjadi NaN
+    # Day columns sesuai dengan jumlah hari stacking
+    day_columns = [f'DAY {i}' for i in range(num_days)]
+    
+    if service_name in trends_df.index and all(col in trends_df.columns for col in day_columns):
+        percentages = trends_df.loc[service_name, day_columns].values
         percentages = pd.to_numeric(percentages, errors='coerce')
     else:
-        # Jika service tidak ditemukan, gunakan rata-rata
-        st.warning(f"Service '{service_name}' tidak ditemukan di file tren. Menggunakan tren rata-rata.")
+        st.warning(f"Service '{service_name}' atau rentang harinya tidak ditemukan di file tren. Menggunakan tren rata-rata.")
         percentages = np.full(num_days, 1.0 / num_days)
 
-    # --- PERBAIKAN DI SINI ---
-    # Ganti nilai NaN (kosong) dengan 0 sebelum melakukan kalkulasi
     percentages = np.nan_to_num(percentages)
-    # -------------------------
     
-    # Pastikan total persentase adalah 1 (100%) untuk akurasi
     if percentages.sum() > 0:
         percentages = percentages / percentages.sum()
 
-    # Menghitung alokasi box harian dan memastikan totalnya pas
     daily_boxes = np.round(percentages * total_boxes).astype(int)
     diff = total_boxes - daily_boxes.sum()
-    if diff != 0:
-        # Distribusikan selisih ke hari dengan alokasi terbesar
-        if len(daily_boxes) > 0:
-            daily_boxes[np.argmax(daily_boxes)] += diff
+    if diff != 0 and len(daily_boxes) > 0:
+        daily_boxes[np.argmax(daily_boxes)] += diff
             
     return daily_boxes
 
 # --- UI STREAMLIT & LOGIKA SIMULASI ---
 
 st.set_page_config(layout="wide")
-st.title("🚢 Simulasi Alokasi Container Yard")
+st.title("🚢 Simulasi Alokasi Container Yard (Berbasis Tanggal)")
 
 # --- Sidebar untuk Input & Parameter ---
 with st.sidebar:
@@ -77,73 +69,75 @@ with st.sidebar:
     )
     
     st.header("3. Parameter Aturan (Adjustable)")
-    # Default values
     intra_ship_gap = 5
     inter_ship_gap = 10
     daily_exclusion_zone = 7
     cluster_req_logic = 'Wajar'
 
-    if rule_level == "Level 1: Optimal":
-        st.info("Menjalankan aturan paling ketat untuk efisiensi dan keamanan maksimal.")
-    
-    if rule_level == "Level 2: Aman & Terfragmentasi":
-        st.info("Aturan keamanan tetap, namun fragmentasi diizinkan untuk menaikkan alokasi.")
-
     if rule_level == "Level 3: Darurat (Approval)":
         st.warning("Mode Darurat: Aturan keamanan dilonggarkan.")
         intra_ship_gap = st.slider("Jarak Internal Kapal", 1, 5, 2)
-        inter_ship_gap = st.slider("Jarak Eksternal Kapal", 1, 10, 5)
         daily_exclusion_zone = st.slider("Zona Eksklusif Harian", 1, 7, 3)
         cluster_req_logic = 'Agresif'
 
 # --- Main App Logic ---
 if uploaded_file:
     try:
-        # Membaca data dari file yang di-upload
-        df_schedule = pd.read_excel(uploaded_file)
-        st.subheader("Data Vessel Schedule yang Di-upload")
+        # --- PERUBAHAN 1: MEMBACA FILE DENGAN PARSING TANGGAL ---
+        date_cols = ['OPEN STACKING', 'ETA', 'ETD']
+        # Membaca file dan langsung mengubah kolom tanggal menjadi tipe datetime
+        df_schedule = pd.read_excel(uploaded_file, parse_dates=date_cols, dayfirst=True)
+        
+        # Membersihkan data 'TOTAL BOX (TEUS)'
+        df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
+        
+        st.subheader("Data Vessel Schedule yang Di-upload (Sudah diproses)")
         st.dataframe(df_schedule)
+        # --- AKHIR PERUBAHAN 1 ---
 
-        # Memuat data tren
-        df_trends = load_stacking_trends(STACKING_trends_URL)
+        df_trends = load_stacking_trends(STACKING_TREND_URL)
 
         if df_trends is not None:
-            # Tombol untuk memulai simulasi
             if st.button("🚀 Mulai Simulasi"):
                 
-                # Placeholder untuk hasil simulasi
-                # Di sinilah semua logika inti simulasi yang telah kita bangun akan ditempatkan.
-                # Logika ini akan sangat panjang dan kompleks, melibatkan:
-                # 1. Inisialisasi yard dan kapal dari DataFrame.
-                # 2. Perulangan harian (daily loop) dari tanggal paling awal hingga paling akhir.
-                # 3. Di setiap hari, jalankan:
-                #    a. Logika pelepasan slot dari kapal yang sudah ETD.
-                #    b. Logika perhitungan kontainer masuk berdasarkan tren.
-                #    c. Logika pencarian slot kosong dengan mempertimbangkan SEMUA aturan
-                #       (Jarak Internal, Jarak Eksternal Kondisional, Zona Eksklusif Harian).
-                #    d. Logika alokasi slot ke cluster yang ada atau membuat cluster baru (termasuk +2 fleksibel).
-                #    e. Pencatatan semua keberhasilan dan kegagalan.
-                # 4. Kalkulasi YOR harian.
-                # 5. Agregasi hasil akhir.
-                
-                # --- SIMULASI OUTPUT DUMMY (Untuk Tampilan) ---
-                # Ganti bagian ini dengan hasil dari logika simulasi nyata Anda.
-                
-                with st.spinner("Menjalankan simulasi kompleks... Ini mungkin memakan waktu beberapa saat."):
-                    # Tampilkan notifikasi level aturan yang digunakan
+                with st.spinner("Menjalankan simulasi berbasis tanggal..."):
                     st.success(f"Simulasi dijalankan menggunakan **{rule_level}**.")
+
+                    # --- PERUBAHAN 2: MENENTUKAN RENTANG TANGGAL SIMULASI ---
+                    start_date = df_schedule['OPEN STACKING'].min().normalize()
+                    end_date = df_schedule['ETD'].max().normalize()
+                    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+                    
+                    # Placeholder untuk hasil harian
+                    daily_occupancy_data = []
+
+                    # --- PERUBAHAN 3: LOOPING BERBASIS TANGGAL ---
+                    for current_date in date_range:
+                        # Di sini akan ada logika simulasi inti yang berjalan per tanggal
+                        # 1. Cek kapal mana yang ETD-nya sudah lewat untuk mengosongkan slot.
+                        # 2. Cek kapal mana yang sedang aktif (current_date di antara Open Stacking & ETD).
+                        # 3. Hitung kontainer masuk untuk kapal aktif pada current_date.
+                        # 4. Jalankan logika alokasi dengan semua aturan.
+                        
+                        # Data dummy untuk YOR
+                        # Dalam simulasi nyata, angka ini adalah hasil kalkulasi dari yard status
+                        total_boxes_in_yard = np.random.randint(3000, 14000) 
+                        occupancy_ratio = (total_boxes_in_yard / (468 * 30)) * 100
+                        daily_occupancy_data.append({
+                            'Tanggal': current_date,
+                            'Total Box di Yard': total_boxes_in_yard,
+                            'Rasio Okupansi (%)': occupancy_ratio
+                        })
+                    # --- AKHIR PERUBAHAN 3 ---
 
                     # --- Output 1: YOR Harian ---
                     st.header("📊 Yard Occupancy Ratio (YOR) Harian")
-                    yor_data = {
-                        'Hari': [f'Hari {i+1}' for i in range(14)],
-                        'Rasio Okupansi (%)': np.random.randint(30, 95, size=14) # Data dummy
-                    }
-                    df_yor = pd.DataFrame(yor_data)
-                    st.line_chart(df_yor.set_index('Hari'))
+                    df_yor = pd.DataFrame(daily_occupancy_data)
+                    # Menggunakan kolom 'Tanggal' sebagai index untuk grafik
+                    st.line_chart(df_yor.set_index('Tanggal')['Rasio Okupansi (%)'])
                     st.dataframe(df_yor)
 
-                    # --- Output 2: Rekapitulasi Alokasi ---
+                    # --- Output lainnya tetap sama (menggunakan data dummy untuk saat ini) ---
                     st.header("📋 Rekapitulasi Alokasi Final")
                     recap_data = {
                         'Kapal': df_schedule['VESSEL'],
@@ -154,7 +148,6 @@ if uploaded_file:
                     df_recap = pd.DataFrame(recap_data)
                     st.dataframe(df_recap)
 
-                    # --- Output 3: Peta Alokasi Detail ---
                     st.header("🗺️ Peta Alokasi Akhir (Detail Slot)")
                     map_data = {
                         'Kapal': ['A', 'A', 'B'],
@@ -168,7 +161,7 @@ if uploaded_file:
                     st.balloons()
     
     except Exception as e:
-        st.error(f"Terjadi kesalahan saat memproses file Anda: {e}")
+        st.error(f"Terjadi kesalahan saat memproses file Anda. Pastikan format tanggal (dd/mm/yyyy) dan kolom sudah benar. Error: {e}")
 
 else:
     st.info("Silakan upload file 'Vessel Schedule' dalam format .xlsx untuk memulai simulasi.")
