@@ -29,20 +29,35 @@ def load_stacking_trends(url):
         st.error(f"Gagal memuat file stacking trends dari URL. Pastikan URL raw sudah benar. Error: {e}")
         return None
 
+# VERSI BARU DENGAN PERBAIKAN
 def get_daily_arrivals(total_boxes, service_name, trends_df, num_days=7):
     """Menghitung jumlah box harian berdasarkan tren atau rata-rata."""
     if service_name in trends_df.index:
         percentages = trends_df.loc[service_name, [f'DAY {i}' for i in range(num_days)]].values
+        # Konversi ke numerik, jika error (misal sel kosong) akan menjadi NaN
         percentages = pd.to_numeric(percentages, errors='coerce')
     else:
         # Jika service tidak ditemukan, gunakan rata-rata
+        st.warning(f"Service '{service_name}' tidak ditemukan di file tren. Menggunakan tren rata-rata.")
         percentages = np.full(num_days, 1.0 / num_days)
+
+    # --- PERBAIKAN DI SINI ---
+    # Ganti nilai NaN (kosong) dengan 0 sebelum melakukan kalkulasi
+    percentages = np.nan_to_num(percentages)
+    # -------------------------
+    
+    # Pastikan total persentase adalah 1 (100%) untuk akurasi
+    if percentages.sum() > 0:
+        percentages = percentages / percentages.sum()
 
     # Menghitung alokasi box harian dan memastikan totalnya pas
     daily_boxes = np.round(percentages * total_boxes).astype(int)
     diff = total_boxes - daily_boxes.sum()
     if diff != 0:
-        daily_boxes[np.argmax(daily_boxes)] += diff
+        # Distribusikan selisih ke hari dengan alokasi terbesar
+        if len(daily_boxes) > 0:
+            daily_boxes[np.argmax(daily_boxes)] += diff
+            
     return daily_boxes
 
 # --- UI STREAMLIT & LOGIKA SIMULASI ---
