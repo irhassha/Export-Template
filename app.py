@@ -28,8 +28,46 @@ def load_stacking_trends(url):
         return None
 
 # Fungsi ini tetap sama, namun sekarang num_days akan dihitung secara dinamis
+# VERSI BARU YANG LEBIH KUAT
 def get_daily_arrivals(total_boxes, service_name, trends_df, num_days):
-    """Menghitung jumlah box harian berdasarkan tren atau rata-rata."""
+    """
+    Menghitung jumlah box harian. Jika rentang hari di file tren tidak cukup,
+    maka sisa harinya akan dianggap 0%.
+    """
+    percentages = []
+    if service_name in trends_df.index:
+        # Loop melalui setiap hari yang dibutuhkan oleh kapal
+        for i in range(num_days):
+            day_col = f'DAY {i}'
+            # Periksa apakah kolom DAY tersebut ada di file tren
+            if day_col in trends_df.columns:
+                # Jika ada, gunakan nilainya
+                percentages.append(trends_df.loc[service_name, day_col])
+            else:
+                # Jika tidak ada, anggap nilainya 0, sesuai permintaan
+                percentages.append(0)
+        
+        percentages = np.array(percentages)
+        percentages = pd.to_numeric(percentages, errors='coerce')
+    else:
+        # Jika nama service sama sekali tidak ditemukan, baru gunakan rata-rata
+        st.warning(f"Service '{service_name}' tidak ditemukan di file tren. Menggunakan tren rata-rata.")
+        percentages = np.full(num_days, 1.0 / num_days)
+
+    # Mengganti nilai kosong (NaN) dengan 0
+    percentages = np.nan_to_num(percentages)
+    
+    # Normalisasi persentase agar totalnya 100% untuk akurasi
+    if percentages.sum() > 0:
+        percentages = percentages / percentages.sum()
+
+    # Menghitung alokasi box harian dan memastikan totalnya pas
+    daily_boxes = np.round(percentages * total_boxes).astype(int)
+    diff = total_boxes - daily_boxes.sum()
+    if diff != 0 and len(daily_boxes) > 0:
+        daily_boxes[np.argmax(daily_boxes)] += diff
+            
+    return daily_boxes
     # Day columns sesuai dengan jumlah hari stacking
     day_columns = [f'DAY {i}' for i in range(num_days)]
     
