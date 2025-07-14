@@ -14,11 +14,11 @@ DEFAULT_YARD_CONFIG = {
 DEFAULT_SLOT_CAPACITY = 30
 
 # URL File Stacking trends dari GitHub (GANTI DENGAN URL ANDA)
-STACKING_trends_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trendss.xlsx' 
+STACKING_trends_URL = 'https://github.com/irhassha/Export-Template/raw/refs/heads/main/stacking_trends.xlsx' 
 # Contoh: 'https://raw.githubusercontent.com/namauser/namarepo/main/stacking_trends.xlsx'
 
 @st.cache_data
-def load_stacking_trendss(url):
+def load_stacking_trends(url):
     """Memuat dan cache data stacking trends dari URL GitHub."""
     try:
         df = pd.read_excel(url)
@@ -29,10 +29,10 @@ def load_stacking_trendss(url):
         st.error(f"Gagal memuat file stacking trends dari URL. Pastikan URL raw sudah benar. Error: {e}")
         return None
 
-def get_daily_arrivals(total_boxes, service_name, trendss_df, num_days=7):
+def get_daily_arrivals(total_boxes, service_name, trends_df, num_days=7):
     """Menghitung jumlah box harian berdasarkan tren atau rata-rata."""
-    if service_name in trendss_df.index:
-        percentages = trendss_df.loc[service_name, [f'DAY {i}' for i in range(num_days)]].values
+    if service_name in trends_df.index:
+        percentages = trends_df.loc[service_name, [f'DAY {i}' for i in range(num_days)]].values
         percentages = pd.to_numeric(percentages, errors='coerce')
     else:
         # Jika service tidak ditemukan, gunakan rata-rata
@@ -90,9 +90,9 @@ if uploaded_file:
         st.dataframe(df_schedule)
 
         # Memuat data tren
-        df_trendss = load_stacking_trendss(STACKING_trends_URL)
+        df_trends = load_stacking_trends(STACKING_trends_URL)
 
-        if df_trendss is not None:
+        if df_trends is not None:
             # Tombol untuk memulai simulasi
             if st.button("🚀 Mulai Simulasi"):
                 
