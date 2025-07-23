@@ -80,6 +80,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for _, row in df_schedule.iterrows():
         ship_name = row['VESSEL']
         start_date = row['OPEN STACKING'].normalize()
+        eta_date = row['ETA'].normalize() # <<< PERUBAHAN BARU
         etd_date = row['ETD'].normalize()
         num_days = (etd_date - start_date).days
         
@@ -88,7 +89,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
         vessels[ship_name] = {
             'name': ship_name, 'service': row['SERVICE'], 'total_boxes': row['TOTAL BOX (TEUS)'],
-            'start_date': start_date, 'etd_date': etd_date,
+            'start_date': start_date, 'eta_date': eta_date, 'etd_date': etd_date, # <<< PERUBAHAN BARU
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
@@ -208,14 +209,18 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
     
-    # PERUBAHAN: Dapatkan daftar kapal yang diabaikan dari rules
     ignored_vessels = rules.get('ignored_vessels', [])
 
     for ship in active_ships:
-        # Lewati kapal itu sendiri DAN kapal yang ada di daftar ignore
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
+        # <<< PERUBAHAN BARU: Cek apakah kapal sudah masuk fase operasional ---
+        is_operationally_active = current_date >= ship['eta_date']
+        if not is_operationally_active:
+            continue # Jika belum ETA, jangan terapkan restriksi dari kapal ini
+        # --- AKHIR PERUBAHAN ---
+            
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
         for cluster in ship['clusters']:
@@ -357,10 +362,8 @@ with st.sidebar:
     st.header("1. Upload File")
     uploaded_file = st.file_uploader("Upload Vessel Schedule (.xlsx)", type=['xlsx'])
     
-    # PERUBAHAN: Pindahkan filter ke sini agar bisa diakses sebelum tombol ditekan
     ignored_vessels = []
     if uploaded_file is not None:
-        # Baca nama kapal dari file yang diupload untuk pilihan filter
         temp_df = pd.read_excel(uploaded_file)
         vessel_list = sorted(temp_df['VESSEL'].unique())
         st.header("Filter Restriksi")
@@ -381,7 +384,6 @@ with st.sidebar:
 
 if uploaded_file:
     try:
-        # Pindahkan pembacaan file ke dalam session state untuk efisiensi
         if 'df_schedule' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
             df_schedule = pd.read_excel(uploaded_file)
             date_cols = ['OPEN STACKING', 'ETA', 'ETD']
@@ -406,7 +408,7 @@ if uploaded_file:
                     'inter_ship_gap': inter_ship_gap,
                     'daily_exclusion_zone': daily_exclusion_zone,
                     'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif',
-                    'ignored_vessels': ignored_vessels # Tambahkan daftar ignore ke rules
+                    'ignored_vessels': ignored_vessels
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
@@ -435,9 +437,10 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            active_vessels_on_date = {
+            # <<< PERUBAHAN BARU: Identifikasi kapal yang sedang dalam fase operasional
+            operationally_active_vessels = {
                 v['name'] for v_name, v in vessels_data.items()
-                if selected_date >= v['start_date'] and selected_date <= v['etd_date']
+                if selected_date >= v['eta_date'] and selected_date <= v['etd_date']
             }
 
             cols = st.columns(4)
@@ -454,8 +457,8 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    # PERUBAHAN: Filter kapal yang menyebabkan restriksi
-                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date and v not in ignored_vessels}
+                    # <<< PERUBAHAN BARU: Cek restriksi berdasarkan status operasional
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in operationally_active_vessels and v not in ignored_vessels}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
