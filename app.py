@@ -203,7 +203,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots, vessels
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
-    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
     blocked_slots = set()
     
@@ -217,19 +216,16 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         for cluster in ship['clusters']:
             if not cluster: continue
             
-            # PERBAIKAN: Logika restriksi kini terbatas per area
             cluster_area = cluster[0][0]
             area_size = DEFAULT_YARD_CONFIG[cluster_area]
             min_slot_num = min(s[1] for s in cluster)
             max_slot_num = max(s[1] for s in cluster)
             
-            # Terapkan Zona Eksklusif Harian (HANYA DI DALAM AREA YANG SAMA)
             start_zone = max(1, min_slot_num - rules['daily_exclusion_zone'])
             end_zone = min(area_size, max_slot_num + rules['daily_exclusion_zone'])
             for i in range(start_zone, end_zone + 1):
                 blocked_slots.add((cluster_area, i))
 
-            # Terapkan Jarak Eksternal jika berlaku (HANYA DI DALAM AREA YANG SAMA)
             if etd_diff <= 1:
                 start_gap = max(1, min_slot_num - rules['inter_ship_gap'])
                 end_gap = min(area_size, max_slot_num + rules['inter_ship_gap'])
@@ -249,8 +245,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
 
 
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
-    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
-    
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
         return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
@@ -260,7 +254,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
-    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
@@ -283,8 +276,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
-    # Prioritas 2 & 3: Buat cluster baru
-    # PERBAIKAN: Kelompokkan blok per area untuk mencegah blok lintas area
     placeable_slots_by_area = {}
     for slot in placeable_slots:
         area = slot[0]
@@ -312,10 +303,12 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             existing_start_idx = get_slot_index_func(existing_cluster[0])
             existing_end_idx = get_slot_index_func(existing_cluster[-1])
             
-            distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
-            if distance < rules['intra_ship_gap']:
-                is_valid_distance = False
-                break
+            # Cek hanya jika cluster baru berada di area yang sama
+            if block[0][0] == existing_cluster[0][0]:
+                distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
+                if distance < rules['intra_ship_gap']:
+                    is_valid_distance = False
+                    break
         if is_valid_distance:
             final_valid_blocks.append(block)
 
@@ -411,6 +404,7 @@ if st.session_state['simulation_results']:
             format_func=lambda date: date.strftime('%d %b %Y')
         )
         
+        # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
         tab1, tab2 = st.tabs(["Ringkasan Area", "Rencana Harian (per Kapal)"])
 
         with tab1:
@@ -418,10 +412,10 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            active_vessels_on_date = [
+            active_vessels_on_date = {
                 v['name'] for v_name, v in vessels_data.items()
                 if selected_date >= v['start_date'] and selected_date <= v['etd_date']
-            ]
+            }
 
             cols = st.columns(4)
             col_idx = 0
@@ -429,19 +423,37 @@ if st.session_state['simulation_results']:
                 with cols[col_idx]:
                     slots_in_area = [(area_name, i) for i in range(1, area_size + 1)]
                     occupied_slots = [s for s in slots_in_area if yard_state_on_date.get(s) is not None]
-                    vessels_in_area = sorted(list({yard_state_on_date[s] for s in occupied_slots}))
                     
-                    is_restricted = any(v in vessels_in_area for v in active_vessels_on_date)
+                    # Buat detail per kapal di area ini
+                    vessels_in_area_details = {}
+                    for slot in occupied_slots:
+                        vessel = yard_state_on_date.get(slot)
+                        if vessel not in vessels_in_area_details:
+                            vessels_in_area_details[vessel] = []
+                        vessels_in_area_details[vessel].append(slot)
+                    
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
-                        st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {area_size}")
-                        st.metric(label="Estimasi Box", value=f"{len(occupied_slots) * DEFAULT_SLOT_CAPACITY}")
-                        st.markdown("**Kapal:**")
-                        st.text(", ".join(vessels_in_area) if vessels_in_area else "-")
+                        st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {area_size}", delta=f"{(len(occupied_slots)/area_size)*100:.1f}%")
+                        
+                        st.markdown("**Detail Kapal & Slot:**")
+                        if not vessels_in_area_details:
+                            st.text("- Kosong -")
+                        else:
+                            for vessel, slots in sorted(vessels_in_area_details.items()):
+                                slots.sort(key=lambda s: s[1])
+                                groups = []
+                                for k, g in itertools.groupby(enumerate(slots), lambda item: item[1][1] - item[0]):
+                                    group = list(item[1] for item in g)
+                                    start, end = group[0][1], group[-1][1]
+                                    groups.append(f"{start}" if start == end else f"{start}-{end}")
+                                st.text(f"• {vessel}: Slot {', '.join(groups)}")
+                        
                         st.markdown("**Status:**")
-                        if is_restricted:
-                            st.warning("⚠️ Terkena Restriksi")
+                        if restricting_vessels:
+                            st.warning(f"⚠️ Terkena Restriksi oleh: {', '.join(sorted(list(restricting_vessels)))}")
                         else:
                             st.success("✅ Area Bebas")
                         st.markdown("---")
