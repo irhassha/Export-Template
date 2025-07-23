@@ -225,7 +225,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
-        # <<< PERBAIKAN: Logika restriksi kini dipicu oleh ETA - 8 jam
         operational_start_time = ship['eta_date'] - timedelta(hours=8)
         if datetime.combine(current_date, datetime.min.time()) < operational_start_time:
             continue
@@ -263,44 +262,10 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     return sorted(list(placeable_slots), key=get_slot_idx_local)
 
 
-def allocate_slots_intelligently(ship, current_date, free_slots, yard_status, rule_level, rules, cluster_info):
-    allocated_slots = []
-    box_failed = 0
-
-    # Hitung kebutuhan
-    slots_needed = ship['box_count']
-
-    # Step 1: Cari slot yang memungkinkan berdasarkan semua aturan aktif
-    placeable_slots = find_placeable_slots(
-        ship, current_date, free_slots, yard_status, rule_level, rules, cluster_info
-    )
-
-    # Step 2: Kelompokkan slot layak ke dalam blok
-    valid_blocks = group_slots_to_blocks(
-        placeable_slots, slots_needed, cluster_info, rules, rule_level
-    )
-
-    # Step 3: Jika blok valid tersedia, lakukan alokasi seperti biasa
-    if valid_blocks:
-        best_block = select_best_block(valid_blocks)
-        for slot in best_block[:slots_needed]:
-            yard_status[slot] = ship['name']
-            allocated_slots.append(slot)
-        return allocated_slots, 0
-
-    # Step 4: Jika tidak cukup blok valid, lakukan fallback jika aturan mengizinkan
-    fallback_allowed = rules.get("allow_fallback", True) or rule_level == "Level 3: Darurat (Approval)"
-    if fallback_allowed:
-        relaxed_slots = [s for s in free_slots if yard_status[s] is None]
-        if len(relaxed_slots) >= slots_needed:
-            for slot in relaxed_slots[:slots_needed]:
-                yard_status[slot] = ship['name'] + "*"  # Tandai bahwa ini alokasi relaksasi
-                allocated_slots.append(slot)
-            return allocated_slots, 0
-
-    # Step 5: Jika semua gagal, hitung box gagal
-    box_failed = slots_needed
-    return allocated_slots, box_failed
+def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
+    placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
+    if len(placeable_slots) < slots_needed:
+        return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
 
     def format_slot_list_to_string(slot_list):
         if not slot_list: return ""
@@ -367,11 +332,13 @@ def allocate_slots_intelligently(ship, current_date, free_slots, yard_status, ru
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
+    # --- PERBAIKAN: Logika Pemilihan Blok "Best-Fit" & Acak ---
     min_size = min(len(b) for b in final_valid_blocks)
     best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
-    random.shuffle(best_fit_blocks)
+    random.shuffle(best_fit_blocks) # Acak kandidat terbaik untuk menyebar
     best_block = best_fit_blocks[0]
     slots_to_fill = best_block[:slots_needed]
+    # --- AKHIR PERBAIKAN ---
 
     target_cluster_idx = -1
     for i, cluster in enumerate(ship['clusters']):
@@ -485,7 +452,6 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            # <<< PERBAIKAN: Logika status operasional yang benar
             operationally_active_vessels = {
                 v['name'] for v_name, v in vessels_data.items()
                 if selected_date.normalize() >= (v['eta_date'] - timedelta(hours=8)).normalize() and selected_date.normalize() <= v['etd_date'].normalize()
