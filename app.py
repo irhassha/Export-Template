@@ -81,7 +81,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for _, row in df_schedule.iterrows():
         ship_name = row['VESSEL']
         start_date = row['OPEN STACKING'].normalize()
-        eta_date = row['ETA'] # Simpan ETA dengan waktu
         etd_date = row['ETD'].normalize()
         num_days = (etd_date - start_date).days
         
@@ -90,7 +89,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
         vessels[ship_name] = {
             'name': ship_name, 'service': row['SERVICE'], 'total_boxes': row['TOTAL BOX (TEUS)'],
-            'start_date': start_date, 'eta_date': eta_date, 'etd_date': etd_date,
+            'start_date': start_date, 'etd_date': etd_date,
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
@@ -225,12 +224,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
-        # <<< PERUBAHAN BARU: Cek apakah kapal sudah masuk fase operasional (ETA - 8 jam) ---
-        operational_start_time = ship['eta_date'] - timedelta(hours=8)
-        if current_date < operational_start_time.normalize():
-            continue # Jika belum masuk hari operasional, jangan terapkan restriksi
-        # --- AKHIR PERUBAHAN ---
-            
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
         for cluster in ship['clusters']:
@@ -334,10 +327,13 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
+    # --- PERBAIKAN: Logika Pemilihan Blok "Best-Fit" & Acak ---
     min_size = min(len(b) for b in final_valid_blocks)
     best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
-    best_block = random.choice(best_fit_blocks)
+    random.shuffle(best_fit_blocks) # Acak kandidat terbaik untuk menyebar
+    best_block = best_fit_blocks[0]
     slots_to_fill = best_block[:slots_needed]
+    # --- AKHIR PERBAIKAN ---
 
     target_cluster_idx = -1
     for i, cluster in enumerate(ship['clusters']):
@@ -451,10 +447,9 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            # <<< PERUBAHAN BARU: Identifikasi kapal yang sedang dalam fase operasional
-            operationally_active_vessels = {
+            active_vessels_on_date = {
                 v['name'] for v_name, v in vessels_data.items()
-                if selected_date >= (v['eta_date'] - timedelta(hours=8)) and selected_date <= v['etd_date']
+                if selected_date >= v['start_date'] and selected_date <= v['etd_date']
             }
 
             cols = st.columns(4)
@@ -471,8 +466,7 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    # <<< PERUBAHAN BARU: Cek restriksi berdasarkan status operasional
-                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in operationally_active_vessels and v not in ignored_vessels}
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date and v not in ignored_vessels}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
