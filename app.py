@@ -92,7 +92,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
-            'remaining_capacity': 0
+            'remaining_capacity': 0 
         }
 
     # --- BAGIAN 2: LOGIKA SIMULASI INTI ---
@@ -372,8 +372,12 @@ if uploaded_file:
         st.error(f"Terjadi kesalahan saat memproses file Anda: {e}")
 
 if st.session_state['simulation_results']:
+    # Unpack hasil dari session_state
     df_yor, df_recap, df_map, df_daily_log, daily_snapshots = st.session_state['simulation_results']
     
+    # Dapatkan data kapal dari simulasi untuk referensi
+    vessels_data = run_simulation(df_schedule, df_trends, {}, "Level 1: Optimal")[4] # Hacky way to get vessel dict, could be improved
+
     st.header("📍 Visualisasi Yard Harian (Interaktif)")
     
     date_options = list(daily_snapshots.keys())
@@ -385,60 +389,45 @@ if st.session_state['simulation_results']:
         )
         
         # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
-        tab1, tab2 = st.tabs(["Ringkasan Blok", "Rencana Harian (per Kapal)"])
+        tab1, tab2 = st.tabs(["Ringkasan Area", "Rencana Harian (per Kapal)"])
 
         with tab1:
-            st.subheader(f"Ringkasan Kondisi Blok untuk {selected_date.strftime('%d %b %Y')}")
+            st.subheader(f"Ringkasan Kondisi Area untuk {selected_date.strftime('%d %b %Y')}")
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            # Dapatkan daftar kapal yang aktif pada tanggal yang dipilih
             active_vessels_on_date = [
-                v['name'] for v in vessels.values() 
+                v['name'] for v_name, v in vessels_data.items()
                 if selected_date >= v['start_date'] and selected_date <= v['etd_date']
             ]
 
-            areas_by_block = {'A': [], 'B': [], 'C': []}
-            for area in DEFAULT_YARD_CONFIG.keys():
-                if area.startswith('A'): areas_by_block['A'].append(area)
-                elif area.startswith('B'): areas_by_block['B'].append(area)
-                elif area.startswith('C'): areas_by_block['C'].append(area)
-
             # Buat layout kolom untuk kartu summary
-            cols = st.columns(len(areas_by_block))
+            cols = st.columns(4) # Tampilkan 4 area per baris
             col_idx = 0
-            for block, areas in areas_by_block.items():
+            for area_name, area_size in DEFAULT_YARD_CONFIG.items():
                 with cols[col_idx]:
-                    # Kalkulasi summary untuk blok ini
-                    slots_in_block = [s for s in yard_state_on_date if s[0] in areas]
-                    occupied_slots = [s for s in slots_in_block if yard_state_on_date[s] is not None]
-                    vessels_in_block = sorted(list({yard_state_on_date[s] for s in occupied_slots}))
+                    slots_in_area = [(area_name, i) for i in range(1, area_size + 1)]
+                    occupied_slots = [s for s in slots_in_area if yard_state_on_date.get(s) is not None]
+                    vessels_in_area = sorted(list({yard_state_on_date[s] for s in occupied_slots}))
                     
-                    # Cek restriksi
-                    is_restricted = any(v in vessels_in_block for v in active_vessels_on_date)
+                    is_restricted = any(v in vessels_in_area for v in active_vessels_on_date)
 
-                    # Gunakan st.container untuk membuat kartu
                     with st.container():
-                        st.markdown(f"### BLOCK {block}")
+                        st.markdown(f"**{area_name}**")
                         
-                        # Keterisian
-                        st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {len(slots_in_block)}")
+                        st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {area_size}")
                         st.metric(label="Estimasi Box", value=f"{len(occupied_slots) * DEFAULT_SLOT_CAPACITY}")
                         
-                        # Kapal di Blok
-                        st.markdown("**Kapal di Blok:**")
-                        if vessels_in_block:
-                            st.text(", ".join(vessels_in_block))
-                        else:
-                            st.text("-")
+                        st.markdown("**Kapal:**")
+                        st.text(", ".join(vessels_in_area) if vessels_in_area else "-")
                         
-                        # Status Restriksi
                         st.markdown("**Status:**")
                         if is_restricted:
                             st.warning("⚠️ Terkena Restriksi")
                         else:
                             st.success("✅ Area Bebas")
-                col_idx += 1
+                        st.markdown("---")
+                col_idx = (col_idx + 1) % 4
 
         with tab2:
             st.subheader(f"Rencana Alokasi untuk {selected_date.strftime('%d %b %Y')}")
