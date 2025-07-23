@@ -207,9 +207,14 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     blocked_slots = set()
     
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
+    
+    # PERUBAHAN: Dapatkan daftar kapal yang diabaikan dari rules
+    ignored_vessels = rules.get('ignored_vessels', [])
 
     for ship in active_ships:
-        if ship['name'] == current_ship['name']: continue
+        # Lewati kapal itu sendiri DAN kapal yang ada di daftar ignore
+        if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
+            continue
         
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
@@ -303,7 +308,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             existing_start_idx = get_slot_index_func(existing_cluster[0])
             existing_end_idx = get_slot_index_func(existing_cluster[-1])
             
-            # Cek hanya jika cluster baru berada di area yang sama
             if block[0][0] == existing_cluster[0][0]:
                 distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
                 if distance < rules['intra_ship_gap']:
@@ -352,6 +356,19 @@ if 'simulation_results' not in st.session_state:
 with st.sidebar:
     st.header("1. Upload File")
     uploaded_file = st.file_uploader("Upload Vessel Schedule (.xlsx)", type=['xlsx'])
+    
+    # PERUBAHAN: Pindahkan filter ke sini agar bisa diakses sebelum tombol ditekan
+    ignored_vessels = []
+    if uploaded_file is not None:
+        # Baca nama kapal dari file yang diupload untuk pilihan filter
+        temp_df = pd.read_excel(uploaded_file)
+        vessel_list = sorted(temp_df['VESSEL'].unique())
+        st.header("Filter Restriksi")
+        ignored_vessels = st.multiselect(
+            "Pilih kapal untuk diabaikan restriksinya:",
+            options=vessel_list
+        )
+
     st.header("2. Pilih Level Aturan")
     rule_level = st.selectbox("Pilih hierarki aturan:", ["Level 1: Optimal", "Level 2: Aman & Terfragmentasi", "Level 3: Darurat (Approval)"])
     st.header("3. Parameter Aturan")
@@ -364,13 +381,19 @@ with st.sidebar:
 
 if uploaded_file:
     try:
-        df_schedule = pd.read_excel(uploaded_file)
-        date_cols = ['OPEN STACKING', 'ETA', 'ETD']
-        for col in date_cols:
-            df_schedule[col] = pd.to_datetime(df_schedule[col], dayfirst=True, errors='coerce')
-        df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
-        df_schedule.dropna(subset=date_cols, inplace=True)
+        # Pindahkan pembacaan file ke dalam session state untuk efisiensi
+        if 'df_schedule' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
+            df_schedule = pd.read_excel(uploaded_file)
+            date_cols = ['OPEN STACKING', 'ETA', 'ETD']
+            for col in date_cols:
+                df_schedule[col] = pd.to_datetime(df_schedule[col], dayfirst=True, errors='coerce')
+            df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
+            df_schedule.dropna(subset=date_cols, inplace=True)
+            st.session_state['df_schedule'] = df_schedule
+            st.session_state['uploaded_filename'] = uploaded_file.name
 
+        df_schedule = st.session_state['df_schedule']
+        
         st.subheader("Data Vessel Schedule yang Di-upload (Sudah diproses)")
         st.dataframe(df_schedule)
 
@@ -382,7 +405,8 @@ if uploaded_file:
                     'intra_ship_gap': intra_ship_gap,
                     'inter_ship_gap': inter_ship_gap,
                     'daily_exclusion_zone': daily_exclusion_zone,
-                    'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
+                    'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif',
+                    'ignored_vessels': ignored_vessels # Tambahkan daftar ignore ke rules
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
@@ -404,7 +428,6 @@ if st.session_state['simulation_results']:
             format_func=lambda date: date.strftime('%d %b %Y')
         )
         
-        # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
         tab1, tab2 = st.tabs(["Ringkasan Area", "Rencana Harian (per Kapal)"])
 
         with tab1:
@@ -424,7 +447,6 @@ if st.session_state['simulation_results']:
                     slots_in_area = [(area_name, i) for i in range(1, area_size + 1)]
                     occupied_slots = [s for s in slots_in_area if yard_state_on_date.get(s) is not None]
                     
-                    # Buat detail per kapal di area ini
                     vessels_in_area_details = {}
                     for slot in occupied_slots:
                         vessel = yard_state_on_date.get(slot)
@@ -432,7 +454,8 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date}
+                    # PERUBAHAN: Filter kapal yang menyebabkan restriksi
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date and v not in ignored_vessels}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
