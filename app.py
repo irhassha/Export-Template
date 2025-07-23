@@ -91,7 +91,8 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             'start_date': start_date, 'etd_date': etd_date,
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
-            'max_clusters': initial_cluster_req + 2
+            'max_clusters': initial_cluster_req + 2,
+            'remaining_capacity': 0 # <<< PERUBAHAN BARU: Inisialisasi sisa kapasitas
         }
 
     # --- BAGIAN 2: LOGIKA SIMULASI INTI ---
@@ -122,20 +123,30 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             if day_index < len(ship['daily_arrivals']):
                 boxes_to_allocate_today = ship['daily_arrivals'][day_index]
             
-            slots_needed = int(np.ceil(boxes_to_allocate_today / slot_capacity))
-
-            if slots_needed == 0: 
-                daily_log.append({
-                    'Tanggal': current_date.strftime('%Y-%m-%d'), 'Kapal': ship['name'],
-                    'Butuh Box': 0, 'Butuh Slot': 0, 
-                    'Slot Berhasil': 0, 'Slot Gagal': 0,
-                    'Rekomendasi': 'Tidak ada aktivitas penumpukan'
-                })
-                continue
+            # <<< PERUBAHAN BARU: Logika Sisa Kapasitas ---
+            effective_boxes_needed = boxes_to_allocate_today - ship['remaining_capacity']
             
-            slots_allocated_today, recommendation = allocate_slots_intelligently(
-                ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index
-            )
+            slots_needed = 0
+            slots_allocated_today = []
+            recommendation = "Tidak ada aktivitas penumpukan"
+
+            if effective_boxes_needed > 0:
+                # Jika butuh slot baru, reset sisa kapasitas dan hitung kebutuhan baru
+                ship['remaining_capacity'] = 0
+                slots_needed = int(np.ceil(effective_boxes_needed / slot_capacity))
+                
+                slots_allocated_today, recommendation = allocate_slots_intelligently(
+                    ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index
+                )
+                
+                # Hitung sisa kapasitas baru dari alokasi hari ini
+                newly_allocated_capacity = len(slots_allocated_today) * slot_capacity
+                ship['remaining_capacity'] = newly_allocated_capacity - effective_boxes_needed
+            else:
+                # Jika sisa kapasitas cukup, tidak perlu slot baru
+                ship['remaining_capacity'] = abs(effective_boxes_needed) # Sisa kapasitas dikurangi pemakaian
+                recommendation = f"Menggunakan sisa kapasitas dari hari sebelumnya. Sisa: {ship['remaining_capacity']} box."
+            # --- AKHIR PERUBAHAN ---
 
             daily_log.append({
                 'Tanggal': current_date.strftime('%Y-%m-%d'), 'Kapal': ship['name'],
@@ -162,7 +173,9 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for ship in vessels.values():
         total_requested = ship['total_boxes']
         successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
-        boxes_successful = successful_slots * slot_capacity
+        # Perhitungan box berhasil kini lebih kompleks, ini adalah estimasi
+        boxes_successful = total_requested - (df_daily_log[df_daily_log['Kapal'] == ship['name']]['Butuh Slot'].sum() - successful_slots) * slot_capacity
+        
         recap_list.append({
             'Kapal': ship['name'], 'Permintaan Box': total_requested,
             'Box Berhasil': boxes_successful,
@@ -210,7 +223,7 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
 
     for ship in active_ships:
-        if ship['name'] == current_ship['name']: continue # Lewati kapal itu sendiri
+        if ship['name'] == current_ship['name']: continue
         
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
@@ -219,10 +232,8 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
             cluster_indices = [get_slot_idx_local(s) for s in cluster]
             min_idx, max_idx = min(cluster_indices), max(cluster_indices)
             
-            # Terapkan Zona Eksklusif Harian
             for i in range(min_idx - rules['daily_exclusion_zone'], max_idx + rules['daily_exclusion_zone'] + 1):
                 blocked_indices.add(i)
-            # Terapkan Jarak Eksternal jika berlaku
             if etd_diff <= 1:
                 for i in range(min_idx - rules['inter_ship_gap'], max_idx + rules['inter_ship_gap'] + 1):
                     blocked_indices.add(i)
@@ -251,7 +262,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         
         placeable_indices = {get_slot_index_func(s) for s in placeable_slots}
         
-        # Cek ke belakang
         expansion_indices_before = set(range(first_slot_idx - slots_needed, first_slot_idx))
         if expansion_indices_before.issubset(placeable_indices):
             slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices_before], key=get_slot_index_func)
@@ -259,7 +269,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
         
-        # Cek ke depan
         expansion_indices_after = set(range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed))
         if expansion_indices_after.issubset(placeable_indices):
             slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices_after], key=get_slot_index_func)
@@ -276,7 +285,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not valid_blocks:
         return [], "Gagal: Tidak ada blok tunggal yang cukup besar."
 
-    # PERBAIKAN: Filter blok yang melanggar jarak internal
     final_valid_blocks = []
     for block in valid_blocks:
         is_valid_distance = True
