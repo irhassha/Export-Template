@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import itertools
+import random
 
 # ==============================================================================
 # BAGIAN 1: KONFIGURASI GLOBAL & FUNGSI-FUNGSI UTAMA
@@ -80,6 +81,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for _, row in df_schedule.iterrows():
         ship_name = row['VESSEL']
         start_date = row['OPEN STACKING'].normalize()
+        eta_date = row['ETA'] # Simpan ETA dengan waktu
         etd_date = row['ETD'].normalize()
         num_days = (etd_date - start_date).days
         
@@ -88,7 +90,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
         vessels[ship_name] = {
             'name': ship_name, 'service': row['SERVICE'], 'total_boxes': row['TOTAL BOX (TEUS)'],
-            'start_date': start_date, 'etd_date': etd_date,
+            'start_date': start_date, 'eta_date': eta_date, 'etd_date': etd_date,
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
@@ -128,6 +130,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             slots_needed = 0
             slots_allocated_today = []
             recommendation = "Tidak ada aktivitas penumpukan"
+            boxes_failed_today = 0
 
             if effective_boxes_needed > 0:
                 ship['remaining_capacity'] = 0
@@ -139,6 +142,12 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 
                 newly_allocated_capacity = len(slots_allocated_today) * slot_capacity
                 ship['remaining_capacity'] = newly_allocated_capacity - effective_boxes_needed
+
+                slots_failed = slots_needed - len(slots_allocated_today)
+                if slots_failed > 0 and slots_needed > 0:
+                    boxes_per_needed_slot = effective_boxes_needed / slots_needed
+                    boxes_failed_today = int(np.round(slots_failed * boxes_per_needed_slot))
+
             elif boxes_to_allocate_today > 0:
                 ship['remaining_capacity'] = abs(effective_boxes_needed)
                 recommendation = f"Menggunakan sisa kapasitas. Sisa: {ship['remaining_capacity']} box."
@@ -148,6 +157,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 'Butuh Box': boxes_to_allocate_today,
                 'Butuh Slot': slots_needed, 'Slot Berhasil': len(slots_allocated_today),
                 'Slot Gagal': slots_needed - len(slots_allocated_today),
+                'Box Gagal Harian': boxes_failed_today,
                 'Rekomendasi': recommendation
             })
         
@@ -167,13 +177,14 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     recap_list = []
     for ship in vessels.values():
         total_requested = ship['total_boxes']
-        successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
-        boxes_successful = successful_slots * slot_capacity + ship['remaining_capacity']
+        
+        total_boxes_failed = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Box Gagal Harian'].sum()
+        boxes_successful = total_requested - total_boxes_failed
         
         recap_list.append({
             'Kapal': ship['name'], 'Permintaan Box': total_requested,
             'Box Berhasil': boxes_successful,
-            'Box Gagal': max(0, total_requested - boxes_successful)
+            'Box Gagal': total_boxes_failed
         })
     df_recap = pd.DataFrame(recap_list)
 
@@ -207,10 +218,19 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     blocked_slots = set()
     
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
+    
+    ignored_vessels = rules.get('ignored_vessels', [])
 
     for ship in active_ships:
-        if ship['name'] == current_ship['name']: continue
+        if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
+            continue
         
+        # <<< PERUBAHAN BARU: Cek apakah kapal sudah masuk fase operasional (ETA - 8 jam) ---
+        operational_start_time = ship['eta_date'] - timedelta(hours=8)
+        if current_date < operational_start_time.normalize():
+            continue # Jika belum masuk hari operasional, jangan terapkan restriksi
+        # --- AKHIR PERUBAHAN ---
+            
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
         for cluster in ship['clusters']:
@@ -303,7 +323,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             existing_start_idx = get_slot_index_func(existing_cluster[0])
             existing_end_idx = get_slot_index_func(existing_cluster[-1])
             
-            # Cek hanya jika cluster baru berada di area yang sama
             if block[0][0] == existing_cluster[0][0]:
                 distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
                 if distance < rules['intra_ship_gap']:
@@ -315,8 +334,9 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
-    final_valid_blocks.sort(key=len)
-    best_block = final_valid_blocks[0]
+    min_size = min(len(b) for b in final_valid_blocks)
+    best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
+    best_block = random.choice(best_fit_blocks)
     slots_to_fill = best_block[:slots_needed]
 
     target_cluster_idx = -1
@@ -352,6 +372,20 @@ if 'simulation_results' not in st.session_state:
 with st.sidebar:
     st.header("1. Upload File")
     uploaded_file = st.file_uploader("Upload Vessel Schedule (.xlsx)", type=['xlsx'])
+    
+    ignored_vessels = []
+    if uploaded_file is not None:
+        try:
+            temp_df = pd.read_excel(uploaded_file)
+            vessel_list = sorted(temp_df['VESSEL'].unique())
+            st.header("Filter Restriksi")
+            ignored_vessels = st.multiselect(
+                "Pilih kapal untuk diabaikan restriksinya:",
+                options=vessel_list
+            )
+        except Exception as e:
+            st.warning(f"Tidak dapat membaca daftar kapal dari file: {e}")
+
     st.header("2. Pilih Level Aturan")
     rule_level = st.selectbox("Pilih hierarki aturan:", ["Level 1: Optimal", "Level 2: Aman & Terfragmentasi", "Level 3: Darurat (Approval)"])
     st.header("3. Parameter Aturan")
@@ -364,13 +398,18 @@ with st.sidebar:
 
 if uploaded_file:
     try:
-        df_schedule = pd.read_excel(uploaded_file)
-        date_cols = ['OPEN STACKING', 'ETA', 'ETD']
-        for col in date_cols:
-            df_schedule[col] = pd.to_datetime(df_schedule[col], dayfirst=True, errors='coerce')
-        df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
-        df_schedule.dropna(subset=date_cols, inplace=True)
+        if 'df_schedule' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
+            df_schedule = pd.read_excel(uploaded_file)
+            date_cols = ['OPEN STACKING', 'ETA', 'ETD']
+            for col in date_cols:
+                df_schedule[col] = pd.to_datetime(df_schedule[col], dayfirst=True, errors='coerce')
+            df_schedule['TOTAL BOX (TEUS)'] = pd.to_numeric(df_schedule['TOTAL BOX (TEUS)'], errors='coerce').fillna(0).astype(int)
+            df_schedule.dropna(subset=date_cols, inplace=True)
+            st.session_state['df_schedule'] = df_schedule
+            st.session_state['uploaded_filename'] = uploaded_file.name
 
+        df_schedule = st.session_state['df_schedule']
+        
         st.subheader("Data Vessel Schedule yang Di-upload (Sudah diproses)")
         st.dataframe(df_schedule)
 
@@ -382,7 +421,8 @@ if uploaded_file:
                     'intra_ship_gap': intra_ship_gap,
                     'inter_ship_gap': inter_ship_gap,
                     'daily_exclusion_zone': daily_exclusion_zone,
-                    'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
+                    'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif',
+                    'ignored_vessels': ignored_vessels
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
@@ -404,7 +444,6 @@ if st.session_state['simulation_results']:
             format_func=lambda date: date.strftime('%d %b %Y')
         )
         
-        # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
         tab1, tab2 = st.tabs(["Ringkasan Area", "Rencana Harian (per Kapal)"])
 
         with tab1:
@@ -412,9 +451,10 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            active_vessels_on_date = {
+            # <<< PERUBAHAN BARU: Identifikasi kapal yang sedang dalam fase operasional
+            operationally_active_vessels = {
                 v['name'] for v_name, v in vessels_data.items()
-                if selected_date >= v['start_date'] and selected_date <= v['etd_date']
+                if selected_date >= (v['eta_date'] - timedelta(hours=8)) and selected_date <= v['etd_date']
             }
 
             cols = st.columns(4)
@@ -424,7 +464,6 @@ if st.session_state['simulation_results']:
                     slots_in_area = [(area_name, i) for i in range(1, area_size + 1)]
                     occupied_slots = [s for s in slots_in_area if yard_state_on_date.get(s) is not None]
                     
-                    # Buat detail per kapal di area ini
                     vessels_in_area_details = {}
                     for slot in occupied_slots:
                         vessel = yard_state_on_date.get(slot)
@@ -432,7 +471,8 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date}
+                    # <<< PERUBAHAN BARU: Cek restriksi berdasarkan status operasional
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in operationally_active_vessels and v not in ignored_vessels}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
@@ -499,7 +539,7 @@ if st.session_state['simulation_results']:
         st.info("Tidak ada data peta alokasi untuk ditampilkan.")
     
     st.header("📓 Log Alokasi Harian")
-    st.dataframe(df_daily_log)
+    st.dataframe(df_daily_log[['Tanggal', 'Kapal', 'Butuh Box', 'Butuh Slot', 'Slot Berhasil', 'Slot Gagal', 'Box Gagal Harian', 'Rekomendasi']])
 
 elif not uploaded_file:
     st.info("Silakan upload file 'Vessel Schedule' dalam format .xlsx untuk memulai simulasi.")
