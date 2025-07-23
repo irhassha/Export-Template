@@ -391,9 +391,12 @@ if st.session_state['simulation_results']:
             st.subheader(f"Ringkasan Kondisi Blok untuk {selected_date.strftime('%d %b %Y')}")
             
             yard_state_on_date = daily_snapshots[selected_date]
-            active_vessels_on_date = [v for v in df_schedule['VESSEL'].unique() 
-                                      if selected_date >= pd.to_datetime(df_schedule[df_schedule['VESSEL']==v]['OPEN STACKING'].iloc[0]) 
-                                      and selected_date <= pd.to_datetime(df_schedule[df_schedule['VESSEL']==v]['ETD'].iloc[0])]
+            
+            # Dapatkan daftar kapal yang aktif pada tanggal yang dipilih
+            active_vessels_on_date = [
+                v['name'] for v in vessels.values() 
+                if selected_date >= v['start_date'] and selected_date <= v['etd_date']
+            ]
 
             areas_by_block = {'A': [], 'B': [], 'C': []}
             for area in DEFAULT_YARD_CONFIG.keys():
@@ -411,9 +414,10 @@ if st.session_state['simulation_results']:
                     occupied_slots = [s for s in slots_in_block if yard_state_on_date[s] is not None]
                     vessels_in_block = sorted(list({yard_state_on_date[s] for s in occupied_slots}))
                     
-                    # Cek restriksi (penyederhanaan)
+                    # Cek restriksi
                     is_restricted = any(v in vessels_in_block for v in active_vessels_on_date)
 
+                    # Gunakan st.container untuk membuat kartu
                     with st.container():
                         st.markdown(f"### BLOCK {block}")
                         
