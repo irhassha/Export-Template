@@ -81,6 +81,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for _, row in df_schedule.iterrows():
         ship_name = row['VESSEL']
         start_date = row['OPEN STACKING'].normalize()
+        eta_date = row['ETA'] # Simpan ETA dengan waktu
         etd_date = row['ETD'].normalize()
         num_days = (etd_date - start_date).days
         
@@ -89,7 +90,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
         vessels[ship_name] = {
             'name': ship_name, 'service': row['SERVICE'], 'total_boxes': row['TOTAL BOX (TEUS)'],
-            'start_date': start_date, 'etd_date': etd_date,
+            'start_date': start_date, 'eta_date': eta_date, 'etd_date': etd_date,
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
@@ -213,6 +214,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots, vessels
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
+    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
     blocked_slots = set()
     
@@ -224,6 +226,13 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
+        # <<< PERBAIKAN BARU: Cek apakah kapal sudah masuk fase operasional (ETA - 8 jam) ---
+        operational_start_time = ship['eta_date'] - timedelta(hours=8)
+        # Pengecekan waktu kini lebih presisi
+        if datetime.combine(current_date, datetime.min.time()) < operational_start_time:
+            continue # Jika belum masuk waktu operasional, jangan terapkan restriksi
+        # --- AKHIR PERBAIKAN ---
+            
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
         for cluster in ship['clusters']:
@@ -258,6 +267,8 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
 
 
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
+    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
+    
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
         return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
@@ -267,6 +278,7 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
+    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
@@ -289,6 +301,7 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
+    # Prioritas 2 & 3: Buat cluster baru
     placeable_slots_by_area = {}
     for slot in placeable_slots:
         area = slot[0]
@@ -327,13 +340,11 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
-    # --- PERBAIKAN: Logika Pemilihan Blok "Best-Fit" & Acak ---
     min_size = min(len(b) for b in final_valid_blocks)
     best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
-    random.shuffle(best_fit_blocks) # Acak kandidat terbaik untuk menyebar
+    random.shuffle(best_fit_blocks)
     best_block = best_fit_blocks[0]
     slots_to_fill = best_block[:slots_needed]
-    # --- AKHIR PERBAIKAN ---
 
     target_cluster_idx = -1
     for i, cluster in enumerate(ship['clusters']):
@@ -447,9 +458,9 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            active_vessels_on_date = {
+            operationally_active_vessels = {
                 v['name'] for v_name, v in vessels_data.items()
-                if selected_date >= v['start_date'] and selected_date <= v['etd_date']
+                if selected_date >= (v['eta_date'] - timedelta(hours=8)) and selected_date <= v['etd_date']
             }
 
             cols = st.columns(4)
@@ -466,7 +477,7 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date and v not in ignored_vessels}
+                    restricting_vessels = {v for v in vessels_in_area_details.keys() if v in operationally_active_vessels and v not in ignored_vessels}
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
