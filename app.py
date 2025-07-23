@@ -196,6 +196,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
+    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
     blocked_indices = set()
     
@@ -208,15 +209,8 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
 
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
 
-    for cluster in current_ship['clusters']:
-        if not cluster: continue
-        cluster_indices = [get_slot_idx_local(s) for s in cluster]
-        min_idx, max_idx = min(cluster_indices), max(cluster_indices)
-        for i in range(min_idx - rules['intra_ship_gap'], max_idx + rules['intra_ship_gap'] + 1):
-            blocked_indices.add(i)
-
     for ship in active_ships:
-        if ship['name'] == current_ship['name']: continue 
+        if ship['name'] == current_ship['name']: continue # Lewati kapal itu sendiri
         
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
@@ -225,8 +219,10 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
             cluster_indices = [get_slot_idx_local(s) for s in cluster]
             min_idx, max_idx = min(cluster_indices), max(cluster_indices)
             
+            # Terapkan Zona Eksklusif Harian
             for i in range(min_idx - rules['daily_exclusion_zone'], max_idx + rules['daily_exclusion_zone'] + 1):
                 blocked_indices.add(i)
+            # Terapkan Jarak Eksternal jika berlaku
             if etd_diff <= 1:
                 for i in range(min_idx - rules['inter_ship_gap'], max_idx + rules['inter_ship_gap'] + 1):
                     blocked_indices.add(i)
@@ -235,41 +231,40 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     return sorted(list(placeable_slots), key=get_slot_idx_local)
 
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
-    """Logika alokasi cerdas yang kini mengembalikan rekomendasi yang lebih detail."""
+    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
     
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
-        return [], "Gagal: Tidak cukup slot valid yang tersedia."
+        return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
 
     def format_slot_list_to_string(slot_list):
         if not slot_list: return ""
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
-    # Prioritas 1: Perluas cluster yang ada
+    # Prioritas 1: Perluas cluster yang ada (tidak perlu cek jarak internal)
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
         first_slot_idx = get_slot_index_func(cluster[0])
         last_slot_idx = get_slot_index_func(cluster[-1])
         
-        potential_expansion_before_indices = set(range(first_slot_idx - slots_needed, first_slot_idx))
+        # Cek ke belakang
+        expansion_indices = set(range(first_slot_idx - slots_needed, first_slot_idx))
         placeable_indices = {get_slot_index_func(s) for s in placeable_slots}
+        if expansion_indices.issubset(placeable_indices):
+            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices], key=get_slot_index_func)
+            ship['clusters'][i] = slots_to_fill + ship['clusters'][i] # Tambah di awal
+            for slot in slots_to_fill: yard_status[slot] = ship['name']
+            return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
         
-        if potential_expansion_before_indices.issubset(placeable_indices):
-            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in potential_expansion_before_indices], key=get_slot_index_func)
+        # Cek ke depan
+        expansion_indices = set(range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed))
+        if expansion_indices.issubset(placeable_indices):
+            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices], key=get_slot_index_func)
             ship['clusters'][i].extend(slots_to_fill)
             for slot in slots_to_fill: yard_status[slot] = ship['name']
-            recommendation = f"Perluas Cluster #{i+1}, target slot: {format_slot_list_to_string(slots_to_fill)}"
-            return slots_to_fill, recommendation
-        
-        potential_expansion_after_indices = set(range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed))
-        if potential_expansion_after_indices.issubset(placeable_indices):
-            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in potential_expansion_after_indices], key=get_slot_index_func)
-            ship['clusters'][i].extend(slots_to_fill)
-            for slot in slots_to_fill: yard_status[slot] = ship['name']
-            recommendation = f"Perluas Cluster #{i+1}, target slot: {format_slot_list_to_string(slots_to_fill)}"
-            return slots_to_fill, recommendation
+            return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
     # Prioritas 2 & 3: Buat cluster baru
     placeable_blocks = []
@@ -280,8 +275,31 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not valid_blocks:
         return [], "Gagal: Tidak ada blok tunggal yang cukup besar."
 
-    valid_blocks.sort(key=len)
-    best_block = valid_blocks[0]
+    # PERBAIKAN: Filter blok yang melanggar jarak internal
+    final_valid_blocks = []
+    for block in valid_blocks:
+        is_valid_distance = True
+        block_start_idx = get_slot_index_func(block[0])
+        block_end_idx = get_slot_index_func(block[slots_needed-1])
+        for existing_cluster in ship['clusters']:
+            if not existing_cluster: continue
+            existing_cluster.sort(key=get_slot_index_func)
+            existing_start_idx = get_slot_index_func(existing_cluster[0])
+            existing_end_idx = get_slot_index_func(existing_cluster[-1])
+            
+            # Cek jarak
+            distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
+            if distance < rules['intra_ship_gap']:
+                is_valid_distance = False
+                break
+        if is_valid_distance:
+            final_valid_blocks.append(block)
+
+    if not final_valid_blocks:
+        return [], "Gagal: Blok tersedia melanggar jarak internal."
+
+    final_valid_blocks.sort(key=len)
+    best_block = final_valid_blocks[0]
     slots_to_fill = best_block[:slots_needed]
 
     target_cluster_idx = -1
@@ -294,11 +312,11 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         if len(ship['clusters']) < ship['max_clusters']:
             ship['clusters'].append([])
             target_cluster_idx = len(ship['clusters']) - 1
-            recommendation = f"Buat Cluster Tambahan #{len(ship['clusters'])}, target slot: {format_slot_list_to_string(slots_to_fill)}"
+            recommendation = f"Buat Cluster Tambahan #{len(ship['clusters'])}, target: {format_slot_list_to_string(slots_to_fill)}"
         else:
             return [], "Gagal: Batas maksimal cluster tercapai."
     else:
-        recommendation = f"Isi Cluster #{target_cluster_idx + 1}, target slot: {format_slot_list_to_string(slots_to_fill)}"
+        recommendation = f"Isi Cluster #{target_cluster_idx + 1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
     ship['clusters'][target_cluster_idx].extend(slots_to_fill)
     for slot in slots_to_fill: yard_status[slot] = ship['name']
