@@ -142,10 +142,10 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 # Hitung sisa kapasitas baru dari alokasi hari ini
                 newly_allocated_capacity = len(slots_allocated_today) * slot_capacity
                 ship['remaining_capacity'] = newly_allocated_capacity - effective_boxes_needed
-            else:
+            elif boxes_to_allocate_today > 0:
                 # Jika sisa kapasitas cukup, tidak perlu slot baru
                 ship['remaining_capacity'] = abs(effective_boxes_needed) # Sisa kapasitas dikurangi pemakaian
-                recommendation = f"Menggunakan sisa kapasitas dari hari sebelumnya. Sisa: {ship['remaining_capacity']} box."
+                recommendation = f"Menggunakan sisa kapasitas. Sisa: {ship['remaining_capacity']} box."
             # --- AKHIR PERUBAHAN ---
 
             daily_log.append({
@@ -173,8 +173,8 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for ship in vessels.values():
         total_requested = ship['total_boxes']
         successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
-        # Perhitungan box berhasil kini lebih kompleks, ini adalah estimasi
-        boxes_successful = total_requested - (df_daily_log[df_daily_log['Kapal'] == ship['name']]['Butuh Slot'].sum() - successful_slots) * slot_capacity
+        # Estimasi box berhasil
+        boxes_successful = successful_slots * slot_capacity + ship['remaining_capacity']
         
         recap_list.append({
             'Kapal': ship['name'], 'Permintaan Box': total_requested,
