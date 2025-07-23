@@ -279,6 +279,40 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     for slot in slots_to_fill: yard_status[slot] = ship['name']
     return slots_to_fill
 
+# --- FUNGSI BARU UNTUK VISUALISASI ---
+def create_stacked_bar(area_name, yard_state_on_date, vessel_colors, total_slots):
+    """Membuat HTML untuk stacked progress bar berwarna."""
+    
+    occupancy = {}
+    for i in range(1, total_slots + 1):
+        vessel = yard_state_on_date.get((area_name, i))
+        if vessel:
+            if vessel not in occupancy:
+                occupancy[vessel] = 0
+            occupancy[vessel] += 1
+            
+    if not occupancy:
+        return f"""<div style="background-color: #333; height: 20px; width: 100%; border-radius: 5px; display: flex; align-items: center; justify-content: center; color: #888; font-size: 12px;">Kosong</div>"""
+
+    bar_html = '<div style="display: flex; width: 100%; height: 20px; border-radius: 5px; overflow: hidden;">'
+    tooltip_text = []
+    
+    sorted_vessels = sorted(occupancy.keys()) # Urutkan nama kapal untuk konsistensi warna
+    
+    for vessel in sorted_vessels:
+        count = occupancy[vessel]
+        percentage = (count / total_slots) * 100
+        color = vessel_colors.get(vessel, "#FFFFFF")
+        bar_html += f'<div style="width: {percentage}%; background-color: {color};"></div>'
+        tooltip_text.append(f"{vessel}: {count} slot")
+    
+    bar_html += '</div>'
+    
+    # Tambahkan tooltip ke container div
+    final_html = f'<div title="{", ".join(tooltip_text)}">{bar_html}</div>'
+    
+    return final_html
+
 # ==============================================================================
 # BAGIAN 2: UI (ANTARMUKA) STREAMLIT
 # ==============================================================================
@@ -286,7 +320,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
 st.set_page_config(layout="wide", page_title="Yard Allocation Simulator")
 st.title("🚢 Simulasi Alokasi Container Yard")
 
-# --- PERBAIKAN: Inisialisasi Session State ---
 if 'simulation_results' not in st.session_state:
     st.session_state['simulation_results'] = None
 
@@ -318,7 +351,6 @@ if uploaded_file:
         df_trends = load_stacking_trends(STACKING_TREND_URL)
 
         if df_trends is not None:
-            # --- PERBAIKAN: Logika Tombol dan Penyimpanan State ---
             if st.button("🚀 Mulai Simulasi"):
                 sim_rules = {
                     'intra_ship_gap': intra_ship_gap,
@@ -327,19 +359,15 @@ if uploaded_file:
                     'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
-                    # Simpan hasil ke session_state
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
                 st.success(f"Simulasi Selesai! Dijalankan menggunakan **{rule_level}**.")
     
     except Exception as e:
         st.error(f"Terjadi kesalahan saat memproses file Anda: {e}")
 
-# --- PERBAIKAN: Logika Tampilan yang Membaca dari Session State ---
 if st.session_state['simulation_results']:
-    # Unpack hasil dari session_state
     df_yor, df_recap, df_map, df_daily_log, daily_snapshots = st.session_state['simulation_results']
     
-    # --- VISUALISASI INTERAKTIF BARU ---
     st.header("📍 Visualisasi Yard Harian (Interaktif)")
     
     date_options = list(daily_snapshots.keys())
@@ -364,12 +392,22 @@ if st.session_state['simulation_results']:
             elif area.startswith('B'): areas_by_block['B'].append(area)
             elif area.startswith('C'): areas_by_block['C'].append(area)
 
+        # --- PERUBAHAN: TAMPILAN HIBRIDA ---
         for block, areas in areas_by_block.items():
-            with st.expander(f"BLOCK {block}", expanded=(block=='A')):
-                for area in sorted(areas):
-                    st.subheader(f"Area: {area}")
-                    cols = st.columns(DEFAULT_YARD_CONFIG[area])
-                    for i in range(1, DEFAULT_YARD_CONFIG[area] + 1):
+            st.subheader(f"BLOCK {block}")
+            for area in sorted(areas):
+                total_slots_in_area = DEFAULT_YARD_CONFIG[area]
+                
+                # Buat label expander dengan progress bar
+                summary_bar_html = create_stacked_bar(area, yard_state_on_date, vessel_colors, total_slots_in_area)
+                expander_label = f"**Area: {area}**"
+                
+                with st.expander(expander_label):
+                    st.markdown(summary_bar_html, unsafe_allow_html=True)
+                    
+                    # Tampilan detail slot di dalam expander
+                    cols = st.columns(total_slots_in_area)
+                    for i in range(1, total_slots_in_area + 1):
                         slot_id = (area, i)
                         vessel_name = yard_state_on_date.get(slot_id)
                         
@@ -378,8 +416,8 @@ if st.session_state['simulation_results']:
                             cols[i-1].markdown(f'<div style="background-color:{color}; color:white; border-radius:3px; text-align:center; padding:5px; font-size:10px;" title="{vessel_name}">{i}</div>', unsafe_allow_html=True)
                         else:
                             cols[i-1].markdown(f'<div style="background-color:#333; border-radius:3px; text-align:center; padding:5px; font-size:10px;">{i}</div>', unsafe_allow_html=True)
+        # --- AKHIR PERUBAHAN ---
 
-    # --- HASIL TABEL TETAP DITAMPILKAN ---
     st.header("📊 Yard Occupancy Ratio (YOR) Harian")
     st.line_chart(df_yor.set_index('Tanggal')['Rasio Okupansi (%)'])
     st.dataframe(df_yor)
@@ -398,4 +436,3 @@ if st.session_state['simulation_results']:
 
 elif not uploaded_file:
     st.info("Silakan upload file 'Vessel Schedule' dalam format .xlsx untuk memulai simulasi.")
-
