@@ -96,7 +96,8 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
     # --- BAGIAN 2: LOGIKA SIMULASI INTI ---
     daily_log = []
-    yor_data = [] # Pindahkan inisialisasi YOR ke sini
+    yor_data = []
+    daily_yard_snapshots = {} # <<< PERUBAHAN BARU: Untuk menyimpan histori yard
     
     start_date_sim = df_schedule['OPEN STACKING'].min().normalize()
     end_date_sim = df_schedule['ETD'].max().normalize()
@@ -137,7 +138,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 'Slot Gagal': slots_needed - len(slots_allocated_today)
             })
         
-        # C. PERBAIKAN: Kalkulasi YOR di akhir setiap hari
+        # C. Kalkulasi YOR dan simpan snapshot yard
         occupied_slots = sum(1 for status in yard_status.values() if status is not None)
         total_slots = len(yard_status)
         yor_data.append({
@@ -145,6 +146,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             'Total Box di Yard': occupied_slots * slot_capacity,
             'Rasio Okupansi (%)': (occupied_slots / total_slots) * 100
         })
+        daily_yard_snapshots[current_date] = yard_status.copy() # <<< PERUBAHAN BARU
         
     # --- BAGIAN 3: AGREGASI & PERSIAPAN OUTPUT ---
     df_daily_log = pd.DataFrame(daily_log)
@@ -185,7 +187,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             })
     df_map = pd.DataFrame(map_list)
 
-    return df_yor, df_recap, df_map, df_daily_log
+    return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots # <<< PERUBAHAN BARU
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
     """Mencari slot valid dengan memeriksa aturan dari kapal LAIN."""
@@ -201,7 +203,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
 
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
 
-    # Aturan Jarak Internal (Intra-ship) dari kapal itu sendiri
     for cluster in current_ship['clusters']:
         if not cluster: continue
         cluster_indices = [get_slot_idx_local(s) for s in cluster]
@@ -326,10 +327,57 @@ if uploaded_file:
                 'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
             }
 
-            df_yor, df_recap, df_map, df_daily_log = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
+            # <<< PERUBAHAN BARU: Menangkap snapshot harian
+            df_yor, df_recap, df_map, df_daily_log, daily_snapshots = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
 
             st.success(f"Simulasi Selesai! Dijalankan menggunakan **{rule_level}**.")
+            
+            # --- VISUALISASI INTERAKTIF BARU ---
+            st.header("📍 Visualisasi Yard Harian (Interaktif)")
+            
+            # Buat slider tanggal
+            date_options = list(daily_snapshots.keys())
+            selected_date = st.select_slider(
+                'Geser untuk memilih tanggal:',
+                options=date_options,
+                format_func=lambda date: date.strftime('%d %b %Y')
+            )
+            
+            # Buat palet warna dinamis untuk kapal
+            vessel_names = df_schedule['VESSEL'].unique()
+            colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FED766", "#2AB7CA", "#F0B7A4", "#F2E2D2",
+                      "#C44D58", "#1A535C", "#7A7D7D", "#A8A8A8", "#66FCF1", "#B9E2A0", "#F9C80E",
+                      "#FF9F1C", "#2EC4B6", "#E71D36", "#011627"]
+            vessel_colors = {name: colors[i % len(colors)] for i, name in enumerate(vessel_names)}
+            
+            # Tampilkan peta yard untuk tanggal yang dipilih
+            yard_state_on_date = daily_snapshots[selected_date]
+            
+            # Kelompokkan area yard (A, B, C)
+            areas_by_block = {'A': [], 'B': [], 'C': []}
+            for area in DEFAULT_YARD_CONFIG.keys():
+                if area.startswith('A'): areas_by_block['A'].append(area)
+                elif area.startswith('B'): areas_by_block['B'].append(area)
+                elif area.startswith('C'): areas_by_block['C'].append(area)
 
+            for block, areas in areas_by_block.items():
+                with st.expander(f"BLOCK {block}", expanded=(block=='A')):
+                    for area in sorted(areas):
+                        st.subheader(f"Area: {area}")
+                        cols = st.columns(DEFAULT_YARD_CONFIG[area])
+                        for i in range(1, DEFAULT_YARD_CONFIG[area] + 1):
+                            slot_id = (area, i)
+                            vessel_name = yard_state_on_date.get(slot_id)
+                            
+                            if vessel_name:
+                                color = vessel_colors.get(vessel_name, "#FFFFFF")
+                                # Tampilkan kotak berwarna dengan tooltip nama kapal
+                                cols[i-1].markdown(f'<div style="background-color:{color}; color:white; border-radius:3px; text-align:center; padding:5px; font-size:10px;" title="{vessel_name}">{i}</div>', unsafe_allow_html=True)
+                            else:
+                                # Tampilkan kotak kosong
+                                cols[i-1].markdown(f'<div style="background-color:#333; border-radius:3px; text-align:center; padding:5px; font-size:10px;">{i}</div>', unsafe_allow_html=True)
+
+            # --- HASIL TABEL TETAP DITAMPILKAN ---
             st.header("📊 Yard Occupancy Ratio (YOR) Harian")
             st.line_chart(df_yor.set_index('Tanggal')['Rasio Okupansi (%)'])
             st.dataframe(df_yor)
