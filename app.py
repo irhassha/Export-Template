@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import itertools
+import random
 
 # ==============================================================================
 # BAGIAN 1: KONFIGURASI GLOBAL & FUNGSI-FUNGSI UTAMA
@@ -208,11 +209,9 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
     
-    # PERUBAHAN: Dapatkan daftar kapal yang diabaikan dari rules
     ignored_vessels = rules.get('ignored_vessels', [])
 
     for ship in active_ships:
-        # Lewati kapal itu sendiri DAN kapal yang ada di daftar ignore
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
@@ -319,9 +318,15 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
-    final_valid_blocks.sort(key=len)
-    best_block = final_valid_blocks[0]
+    # --- PERBAIKAN: Logika Pemilihan Blok "Best-Fit" & Acak ---
+    # Cari ukuran blok terkecil yang masih muat
+    min_size = min(len(b) for b in final_valid_blocks)
+    # Ambil semua blok yang ukurannya paling pas (paling kecil)
+    best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
+    # Pilih satu blok secara acak dari kandidat terbaik untuk menyebar alokasi
+    best_block = random.choice(best_fit_blocks)
     slots_to_fill = best_block[:slots_needed]
+    # --- AKHIR PERBAIKAN ---
 
     target_cluster_idx = -1
     for i, cluster in enumerate(ship['clusters']):
@@ -357,17 +362,18 @@ with st.sidebar:
     st.header("1. Upload File")
     uploaded_file = st.file_uploader("Upload Vessel Schedule (.xlsx)", type=['xlsx'])
     
-    # PERUBAHAN: Pindahkan filter ke sini agar bisa diakses sebelum tombol ditekan
     ignored_vessels = []
     if uploaded_file is not None:
-        # Baca nama kapal dari file yang diupload untuk pilihan filter
-        temp_df = pd.read_excel(uploaded_file)
-        vessel_list = sorted(temp_df['VESSEL'].unique())
-        st.header("Filter Restriksi")
-        ignored_vessels = st.multiselect(
-            "Pilih kapal untuk diabaikan restriksinya:",
-            options=vessel_list
-        )
+        try:
+            temp_df = pd.read_excel(uploaded_file)
+            vessel_list = sorted(temp_df['VESSEL'].unique())
+            st.header("Filter Restriksi")
+            ignored_vessels = st.multiselect(
+                "Pilih kapal untuk diabaikan restriksinya:",
+                options=vessel_list
+            )
+        except Exception as e:
+            st.warning(f"Tidak dapat membaca daftar kapal dari file: {e}")
 
     st.header("2. Pilih Level Aturan")
     rule_level = st.selectbox("Pilih hierarki aturan:", ["Level 1: Optimal", "Level 2: Aman & Terfragmentasi", "Level 3: Darurat (Approval)"])
@@ -381,7 +387,6 @@ with st.sidebar:
 
 if uploaded_file:
     try:
-        # Pindahkan pembacaan file ke dalam session state untuk efisiensi
         if 'df_schedule' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
             df_schedule = pd.read_excel(uploaded_file)
             date_cols = ['OPEN STACKING', 'ETA', 'ETD']
@@ -406,7 +411,7 @@ if uploaded_file:
                     'inter_ship_gap': inter_ship_gap,
                     'daily_exclusion_zone': daily_exclusion_zone,
                     'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif',
-                    'ignored_vessels': ignored_vessels # Tambahkan daftar ignore ke rules
+                    'ignored_vessels': ignored_vessels
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
@@ -454,7 +459,6 @@ if st.session_state['simulation_results']:
                             vessels_in_area_details[vessel] = []
                         vessels_in_area_details[vessel].append(slot)
                     
-                    # PERUBAHAN: Filter kapal yang menyebabkan restriksi
                     restricting_vessels = {v for v in vessels_in_area_details.keys() if v in active_vessels_on_date and v not in ignored_vessels}
 
                     with st.container():
