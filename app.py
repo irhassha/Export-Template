@@ -129,6 +129,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             slots_needed = 0
             slots_allocated_today = []
             recommendation = "Tidak ada aktivitas penumpukan"
+            boxes_failed_today = 0
 
             if effective_boxes_needed > 0:
                 ship['remaining_capacity'] = 0
@@ -140,6 +141,14 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 
                 newly_allocated_capacity = len(slots_allocated_today) * slot_capacity
                 ship['remaining_capacity'] = newly_allocated_capacity - effective_boxes_needed
+
+                # <<< PERBAIKAN: Kalkulasi Box Gagal Harian ---
+                slots_failed = slots_needed - len(slots_allocated_today)
+                if slots_failed > 0 and slots_needed > 0:
+                    boxes_per_needed_slot = effective_boxes_needed / slots_needed
+                    boxes_failed_today = int(np.round(slots_failed * boxes_per_needed_slot))
+                # --- AKHIR PERBAIKAN ---
+
             elif boxes_to_allocate_today > 0:
                 ship['remaining_capacity'] = abs(effective_boxes_needed)
                 recommendation = f"Menggunakan sisa kapasitas. Sisa: {ship['remaining_capacity']} box."
@@ -149,6 +158,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 'Butuh Box': boxes_to_allocate_today,
                 'Butuh Slot': slots_needed, 'Slot Berhasil': len(slots_allocated_today),
                 'Slot Gagal': slots_needed - len(slots_allocated_today),
+                'Box Gagal Harian': boxes_failed_today, # <<< PERBAIKAN: Tambahkan ke log
                 'Rekomendasi': recommendation
             })
         
@@ -168,13 +178,16 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     recap_list = []
     for ship in vessels.values():
         total_requested = ship['total_boxes']
-        successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
-        boxes_successful = successful_slots * slot_capacity + ship['remaining_capacity']
+        
+        # <<< PERBAIKAN: Hitung kegagalan dari log harian ---
+        total_boxes_failed = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Box Gagal Harian'].sum()
+        boxes_successful = total_requested - total_boxes_failed
+        # --- AKHIR PERBAIKAN ---
         
         recap_list.append({
             'Kapal': ship['name'], 'Permintaan Box': total_requested,
             'Box Berhasil': boxes_successful,
-            'Box Gagal': max(0, total_requested - boxes_successful)
+            'Box Gagal': total_boxes_failed
         })
     df_recap = pd.DataFrame(recap_list)
 
@@ -318,15 +331,10 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     if not final_valid_blocks:
         return [], "Gagal: Blok tersedia melanggar jarak internal."
 
-    # --- PERBAIKAN: Logika Pemilihan Blok "Best-Fit" & Acak ---
-    # Cari ukuran blok terkecil yang masih muat
     min_size = min(len(b) for b in final_valid_blocks)
-    # Ambil semua blok yang ukurannya paling pas (paling kecil)
     best_fit_blocks = [b for b in final_valid_blocks if len(b) == min_size]
-    # Pilih satu blok secara acak dari kandidat terbaik untuk menyebar alokasi
     best_block = random.choice(best_fit_blocks)
     slots_to_fill = best_block[:slots_needed]
-    # --- AKHIR PERBAIKAN ---
 
     target_cluster_idx = -1
     for i, cluster in enumerate(ship['clusters']):
@@ -526,7 +534,9 @@ if st.session_state['simulation_results']:
         st.info("Tidak ada data peta alokasi untuk ditampilkan.")
     
     st.header("📓 Log Alokasi Harian")
-    st.dataframe(df_daily_log)
+    # <<< PERBAIKAN: Tampilkan kolom 'Box Gagal Harian' ---
+    st.dataframe(df_daily_log[['Tanggal', 'Kapal', 'Butuh Box', 'Butuh Slot', 'Slot Berhasil', 'Slot Gagal', 'Box Gagal Harian', 'Rekomendasi']])
+    # --- AKHIR PERBAIKAN ---
 
 elif not uploaded_file:
     st.info("Silakan upload file 'Vessel Schedule' dalam format .xlsx untuk memulai simulasi.")
