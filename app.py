@@ -214,7 +214,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots, vessels
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
-    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
     blocked_slots = set()
     
@@ -226,12 +225,10 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         if ship['name'] == current_ship['name'] or ship['name'] in ignored_vessels:
             continue
         
-        # <<< PERBAIKAN BARU: Cek apakah kapal sudah masuk fase operasional (ETA - 8 jam) ---
+        # <<< PERBAIKAN: Logika restriksi kini dipicu oleh ETA - 8 jam
         operational_start_time = ship['eta_date'] - timedelta(hours=8)
-        # Pengecekan waktu kini lebih presisi
         if datetime.combine(current_date, datetime.min.time()) < operational_start_time:
-            continue # Jika belum masuk waktu operasional, jangan terapkan restriksi
-        # --- AKHIR PERBAIKAN ---
+            continue
             
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
@@ -267,8 +264,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
 
 
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
-    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
-    
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
         return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
@@ -278,7 +273,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
-    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
@@ -301,7 +295,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
-    # Prioritas 2 & 3: Buat cluster baru
     placeable_slots_by_area = {}
     for slot in placeable_slots:
         area = slot[0]
@@ -458,9 +451,10 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
+            # <<< PERBAIKAN: Logika status operasional yang benar
             operationally_active_vessels = {
                 v['name'] for v_name, v in vessels_data.items()
-                if selected_date >= (v['eta_date'] - timedelta(hours=8)) and selected_date <= v['etd_date']
+                if selected_date.normalize() >= (v['eta_date'] - timedelta(hours=8)).normalize() and selected_date.normalize() <= v['etd_date'].normalize()
             }
 
             cols = st.columns(4)
