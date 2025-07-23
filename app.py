@@ -200,20 +200,13 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             })
     df_map = pd.DataFrame(map_list)
 
-    # PERBAIKAN: Kembalikan juga dictionary 'vessels'
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots, vessels
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
+    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
-    blocked_indices = set()
+    blocked_slots = set()
     
-    offset = 0
-    temp_map = {}
-    for area, num_slots in DEFAULT_YARD_CONFIG.items():
-        temp_map[area] = {'offset': offset}; offset += num_slots
-    def get_slot_idx_local(slot):
-        return temp_map[slot[0]]['offset'] + slot[1] - 1
-
     active_ships = [ship for ship in all_ships.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']]
 
     for ship in active_ships:
@@ -223,19 +216,41 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
         
         for cluster in ship['clusters']:
             if not cluster: continue
-            cluster_indices = [get_slot_idx_local(s) for s in cluster]
-            min_idx, max_idx = min(cluster_indices), max(cluster_indices)
             
-            for i in range(min_idx - rules['daily_exclusion_zone'], max_idx + rules['daily_exclusion_zone'] + 1):
-                blocked_indices.add(i)
-            if etd_diff <= 1:
-                for i in range(min_idx - rules['inter_ship_gap'], max_idx + rules['inter_ship_gap'] + 1):
-                    blocked_indices.add(i)
+            # PERBAIKAN: Logika restriksi kini terbatas per area
+            cluster_area = cluster[0][0]
+            area_size = DEFAULT_YARD_CONFIG[cluster_area]
+            min_slot_num = min(s[1] for s in cluster)
+            max_slot_num = max(s[1] for s in cluster)
+            
+            # Terapkan Zona Eksklusif Harian (HANYA DI DALAM AREA YANG SAMA)
+            start_zone = max(1, min_slot_num - rules['daily_exclusion_zone'])
+            end_zone = min(area_size, max_slot_num + rules['daily_exclusion_zone'])
+            for i in range(start_zone, end_zone + 1):
+                blocked_slots.add((cluster_area, i))
 
-    placeable_slots = {slot for slot in free_slots if get_slot_idx_local(slot) not in blocked_indices}
+            # Terapkan Jarak Eksternal jika berlaku (HANYA DI DALAM AREA YANG SAMA)
+            if etd_diff <= 1:
+                start_gap = max(1, min_slot_num - rules['inter_ship_gap'])
+                end_gap = min(area_size, max_slot_num + rules['inter_ship_gap'])
+                for i in range(start_gap, end_gap + 1):
+                    blocked_slots.add((cluster_area, i))
+
+    placeable_slots = free_slots - blocked_slots
+    
+    offset = 0
+    temp_map = {}
+    for area, num_slots in DEFAULT_YARD_CONFIG.items():
+        temp_map[area] = {'offset': offset}; offset += num_slots
+    def get_slot_idx_local(slot):
+        return temp_map[slot[0]]['offset'] + slot[1] - 1
+        
     return sorted(list(placeable_slots), key=get_slot_idx_local)
 
+
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
+    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
+    
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
         return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
@@ -245,6 +260,7 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
+    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
@@ -267,9 +283,19 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
+    # Prioritas 2 & 3: Buat cluster baru
+    # PERBAIKAN: Kelompokkan blok per area untuk mencegah blok lintas area
+    placeable_slots_by_area = {}
+    for slot in placeable_slots:
+        area = slot[0]
+        if area not in placeable_slots_by_area: placeable_slots_by_area[area] = []
+        placeable_slots_by_area[area].append(slot)
+
     placeable_blocks = []
-    for k, g in itertools.groupby(enumerate(placeable_slots), lambda item: get_slot_index_func(item[1]) - item[0]):
-        placeable_blocks.append([item[1] for item in g])
+    for area, slots in placeable_slots_by_area.items():
+        slots.sort(key=lambda s: s[1])
+        for k, g in itertools.groupby(enumerate(slots), lambda item: item[1][1] - item[0]):
+             placeable_blocks.append([item[1] for item in g])
 
     valid_blocks = [block for block in placeable_blocks if len(block) >= slots_needed]
     if not valid_blocks:
@@ -366,7 +392,6 @@ if uploaded_file:
                     'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
-                    # PERBAIKAN: Tangkap semua 6 return values
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
                 st.success(f"Simulasi Selesai! Dijalankan menggunakan **{rule_level}**.")
     
@@ -374,7 +399,6 @@ if uploaded_file:
         st.error(f"Terjadi kesalahan saat memproses file Anda: {e}")
 
 if st.session_state['simulation_results']:
-    # PERBAIKAN: Unpack semua 6 return values
     df_yor, df_recap, df_map, df_daily_log, daily_snapshots, vessels_data = st.session_state['simulation_results']
     
     st.header("📍 Visualisasi Yard Harian (Interaktif)")
@@ -394,7 +418,6 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
-            # PERBAIKAN: Gunakan vessels_data yang sudah di-unpack
             active_vessels_on_date = [
                 v['name'] for v_name, v in vessels_data.items()
                 if selected_date >= v['start_date'] and selected_date <= v['etd_date']
