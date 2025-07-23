@@ -242,26 +242,27 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
-    # Prioritas 1: Perluas cluster yang ada (tidak perlu cek jarak internal)
+    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
         first_slot_idx = get_slot_index_func(cluster[0])
         last_slot_idx = get_slot_index_func(cluster[-1])
         
-        # Cek ke belakang
-        expansion_indices = set(range(first_slot_idx - slots_needed, first_slot_idx))
         placeable_indices = {get_slot_index_func(s) for s in placeable_slots}
-        if expansion_indices.issubset(placeable_indices):
-            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices], key=get_slot_index_func)
-            ship['clusters'][i] = slots_to_fill + ship['clusters'][i] # Tambah di awal
+        
+        # Cek ke belakang
+        expansion_indices_before = set(range(first_slot_idx - slots_needed, first_slot_idx))
+        if expansion_indices_before.issubset(placeable_indices):
+            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices_before], key=get_slot_index_func)
+            ship['clusters'][i] = slots_to_fill + ship['clusters'][i]
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
         
         # Cek ke depan
-        expansion_indices = set(range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed))
-        if expansion_indices.issubset(placeable_indices):
-            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices], key=get_slot_index_func)
+        expansion_indices_after = set(range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed))
+        if expansion_indices_after.issubset(placeable_indices):
+            slots_to_fill = sorted([s for s in placeable_slots if get_slot_index_func(s) in expansion_indices_after], key=get_slot_index_func)
             ship['clusters'][i].extend(slots_to_fill)
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
@@ -287,7 +288,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             existing_start_idx = get_slot_index_func(existing_cluster[0])
             existing_end_idx = get_slot_index_func(existing_cluster[-1])
             
-            # Cek jarak
             distance = max(existing_start_idx - block_end_idx, block_start_idx - existing_end_idx) - 1
             if distance < rules['intra_ship_gap']:
                 is_valid_distance = False
