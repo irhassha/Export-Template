@@ -92,7 +92,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             'daily_arrivals': get_daily_arrivals(row['TOTAL BOX (TEUS)'], row['SERVICE'], df_trends, num_days + 1),
             'clusters': [[] for _ in range(initial_cluster_req)],
             'max_clusters': initial_cluster_req + 2,
-            'remaining_capacity': 0 # <<< PERUBAHAN BARU: Inisialisasi sisa kapasitas
+            'remaining_capacity': 0
         }
 
     # --- BAGIAN 2: LOGIKA SIMULASI INTI ---
@@ -123,7 +123,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             if day_index < len(ship['daily_arrivals']):
                 boxes_to_allocate_today = ship['daily_arrivals'][day_index]
             
-            # <<< PERUBAHAN BARU: Logika Sisa Kapasitas ---
             effective_boxes_needed = boxes_to_allocate_today - ship['remaining_capacity']
             
             slots_needed = 0
@@ -131,7 +130,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             recommendation = "Tidak ada aktivitas penumpukan"
 
             if effective_boxes_needed > 0:
-                # Jika butuh slot baru, reset sisa kapasitas dan hitung kebutuhan baru
                 ship['remaining_capacity'] = 0
                 slots_needed = int(np.ceil(effective_boxes_needed / slot_capacity))
                 
@@ -139,14 +137,11 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                     ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index
                 )
                 
-                # Hitung sisa kapasitas baru dari alokasi hari ini
                 newly_allocated_capacity = len(slots_allocated_today) * slot_capacity
                 ship['remaining_capacity'] = newly_allocated_capacity - effective_boxes_needed
             elif boxes_to_allocate_today > 0:
-                # Jika sisa kapasitas cukup, tidak perlu slot baru
-                ship['remaining_capacity'] = abs(effective_boxes_needed) # Sisa kapasitas dikurangi pemakaian
+                ship['remaining_capacity'] = abs(effective_boxes_needed)
                 recommendation = f"Menggunakan sisa kapasitas. Sisa: {ship['remaining_capacity']} box."
-            # --- AKHIR PERUBAHAN ---
 
             daily_log.append({
                 'Tanggal': current_date.strftime('%Y-%m-%d'), 'Kapal': ship['name'],
@@ -173,7 +168,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for ship in vessels.values():
         total_requested = ship['total_boxes']
         successful_slots = df_daily_log[df_daily_log['Kapal'] == ship['name']]['Slot Berhasil'].sum()
-        # Estimasi box berhasil
         boxes_successful = successful_slots * slot_capacity + ship['remaining_capacity']
         
         recap_list.append({
@@ -209,7 +203,6 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
-    """PERBAIKAN: Fungsi ini sekarang HANYA memeriksa aturan dari kapal LAIN."""
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
     blocked_indices = set()
     
@@ -242,8 +235,6 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     return sorted(list(placeable_slots), key=get_slot_idx_local)
 
 def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
-    """PERBAIKAN: Logika alokasi cerdas dengan penanganan Jarak Internal yang benar."""
-    
     placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
     if len(placeable_slots) < slots_needed:
         return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
@@ -253,7 +244,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
         start = slot_list[0]; end = slot_list[-1]
         return f"{start[0]}:{start[1]}" if start == end else f"{start[0]}:{start[1]}-{end[1]}"
 
-    # Prioritas 1: Perluas cluster yang ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
@@ -276,7 +266,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill, f"Perluas Cluster #{i+1}, target: {format_slot_list_to_string(slots_to_fill)}"
 
-    # Prioritas 2 & 3: Buat cluster baru
     placeable_blocks = []
     for k, g in itertools.groupby(enumerate(placeable_slots), lambda item: get_slot_index_func(item[1]) - item[0]):
         placeable_blocks.append([item[1] for item in g])
@@ -329,28 +318,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     ship['clusters'][target_cluster_idx].extend(slots_to_fill)
     for slot in slots_to_fill: yard_status[slot] = ship['name']
     return slots_to_fill, recommendation
-
-def create_stacked_bar(area_name, yard_state_on_date, vessel_colors, total_slots):
-    occupancy = {}
-    for i in range(1, total_slots + 1):
-        vessel = yard_state_on_date.get((area_name, i))
-        if vessel:
-            if vessel not in occupancy: occupancy[vessel] = 0
-            occupancy[vessel] += 1
-            
-    if not occupancy:
-        return f"""<div style="background-color: #333; height: 20px; width: 100%; border-radius: 5px; display: flex; align-items: center; justify-content: center; color: #888; font-size: 12px;">Kosong</div>"""
-
-    bar_html = '<div style="display: flex; width: 100%; height: 20px; border-radius: 5px; overflow: hidden;">'
-    tooltip_text = []
-    for vessel in sorted(occupancy.keys()):
-        count = occupancy[vessel]
-        percentage = (count / total_slots) * 100
-        color = vessel_colors.get(vessel, "#FFFFFF")
-        bar_html += f'<div style="width: {percentage}%; background-color: {color};"></div>'
-        tooltip_text.append(f"{vessel}: {count} slot")
-    bar_html += '</div>'
-    return f'<div title="{", ".join(tooltip_text)}">{bar_html}</div>'
 
 # ==============================================================================
 # BAGIAN 2: UI (ANTARMUKA) STREAMLIT
@@ -417,40 +384,58 @@ if st.session_state['simulation_results']:
             format_func=lambda date: date.strftime('%d %b %Y')
         )
         
-        tab1, tab2 = st.tabs(["Peta Yard (Visual)", "Rencana Harian (per Kapal)"])
+        # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
+        tab1, tab2 = st.tabs(["Ringkasan Blok", "Rencana Harian (per Kapal)"])
 
         with tab1:
-            vessel_names = df_schedule['VESSEL'].unique()
-            colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FED766", "#2AB7CA", "#F0B7A4", "#F2E2D2",
-                      "#C44D58", "#1A535C", "#7A7D7D", "#A8A8A8", "#66FCF1", "#B9E2A0", "#F9C80E",
-                      "#FF9F1C", "#2EC4B6", "#E71D36", "#011627"]
-            vessel_colors = {name: colors[i % len(colors)] for i, name in enumerate(vessel_names)}
+            st.subheader(f"Ringkasan Kondisi Blok untuk {selected_date.strftime('%d %b %Y')}")
             
             yard_state_on_date = daily_snapshots[selected_date]
-            
+            active_vessels_on_date = [v for v in df_schedule['VESSEL'].unique() 
+                                      if selected_date >= pd.to_datetime(df_schedule[df_schedule['VESSEL']==v]['OPEN STACKING'].iloc[0]) 
+                                      and selected_date <= pd.to_datetime(df_schedule[df_schedule['VESSEL']==v]['ETD'].iloc[0])]
+
             areas_by_block = {'A': [], 'B': [], 'C': []}
             for area in DEFAULT_YARD_CONFIG.keys():
                 if area.startswith('A'): areas_by_block['A'].append(area)
                 elif area.startswith('B'): areas_by_block['B'].append(area)
                 elif area.startswith('C'): areas_by_block['C'].append(area)
 
+            # Buat layout kolom untuk kartu summary
+            cols = st.columns(len(areas_by_block))
+            col_idx = 0
             for block, areas in areas_by_block.items():
-                st.subheader(f"BLOCK {block}")
-                for area in sorted(areas):
-                    total_slots_in_area = DEFAULT_YARD_CONFIG[area]
-                    summary_bar_html = create_stacked_bar(area, yard_state_on_date, vessel_colors, total_slots_in_area)
+                with cols[col_idx]:
+                    # Kalkulasi summary untuk blok ini
+                    slots_in_block = [s for s in yard_state_on_date if s[0] in areas]
+                    occupied_slots = [s for s in slots_in_block if yard_state_on_date[s] is not None]
+                    vessels_in_block = sorted(list({yard_state_on_date[s] for s in occupied_slots}))
                     
-                    with st.expander(f"**Area: {area}**"):
-                        st.markdown(summary_bar_html, unsafe_allow_html=True)
-                        cols = st.columns(total_slots_in_area)
-                        for i in range(1, total_slots_in_area + 1):
-                            vessel_name = yard_state_on_date.get((area, i))
-                            if vessel_name:
-                                color = vessel_colors.get(vessel_name, "#FFFFFF")
-                                cols[i-1].markdown(f'<div style="background-color:{color}; border-radius:3px; padding:5px;" title="{vessel_name}">&nbsp;</div>', unsafe_allow_html=True)
-                            else:
-                                cols[i-1].markdown(f'<div style="background-color:#333; border-radius:3px; padding:5px;">&nbsp;</div>', unsafe_allow_html=True)
-        
+                    # Cek restriksi (penyederhanaan)
+                    is_restricted = any(v in vessels_in_block for v in active_vessels_on_date)
+
+                    with st.container():
+                        st.markdown(f"### BLOCK {block}")
+                        
+                        # Keterisian
+                        st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {len(slots_in_block)}")
+                        st.metric(label="Estimasi Box", value=f"{len(occupied_slots) * DEFAULT_SLOT_CAPACITY}")
+                        
+                        # Kapal di Blok
+                        st.markdown("**Kapal di Blok:**")
+                        if vessels_in_block:
+                            st.text(", ".join(vessels_in_block))
+                        else:
+                            st.text("-")
+                        
+                        # Status Restriksi
+                        st.markdown("**Status:**")
+                        if is_restricted:
+                            st.warning("⚠️ Terkena Restriksi")
+                        else:
+                            st.success("✅ Area Bebas")
+                col_idx += 1
+
         with tab2:
             st.subheader(f"Rencana Alokasi untuk {selected_date.strftime('%d %b %Y')}")
             
