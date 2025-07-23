@@ -96,6 +96,7 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
 
     # --- BAGIAN 2: LOGIKA SIMULASI INTI ---
     daily_log = []
+    yor_data = [] # Pindahkan inisialisasi YOR ke sini
     
     start_date_sim = df_schedule['OPEN STACKING'].min().normalize()
     end_date_sim = df_schedule['ETD'].max().normalize()
@@ -104,18 +105,16 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
     for current_date in date_range:
         # A. Kosongkan slot dari kapal yang sudah berangkat
         for ship_data in vessels.values():
-            # Cek apakah kapal berangkat TEPAT KEMARIN
             if ship_data['etd_date'].normalize() == (current_date - timedelta(days=1)).normalize():
                 slots_to_free = [slot for cluster in ship_data['clusters'] for slot in cluster]
                 for slot in slots_to_free:
                     if yard_status.get(slot) == ship_data['name']:
                         yard_status[slot] = None
-                # JANGAN HAPUS CLUSTER: ship_data['clusters'] = [] <-- BARIS INI DIHAPUS
 
         # B. Alokasikan untuk kapal yang aktif
         active_ships_today = sorted(
             [ship for ship in vessels.values() if current_date >= ship['start_date'] and current_date <= ship['etd_date']],
-            key=lambda x: x['total_boxes'], reverse=True # Prioritaskan kapal besar
+            key=lambda x: x['total_boxes'], reverse=True
         )
         
         for ship in active_ships_today:
@@ -138,30 +137,17 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
                 'Slot Gagal': slots_needed - len(slots_allocated_today)
             })
         
-    # --- BAGIAN 3: AGREGASI & PERSIAPAN OUTPUT ---
-    df_daily_log = pd.DataFrame(daily_log)
-    
-    # Kalkulasi YOR harian yang akurat
-    yor_data = []
-    # Re-simulasi status yard harian untuk YOR yang akurat
-    temp_yard_status_for_yor = {(area, i): None for area, num_slots in yard_config.items() for i in range(1, num_slots + 1)}
-    for date in date_range:
-        # Tambahkan alokasi baru
-        log_today = df_daily_log[df_daily_log['Tanggal'] == date.strftime('%Y-%m-%d')]
-        # Ini adalah penyederhanaan. Logika YOR yang akurat memerlukan state management yang lebih kompleks.
-        
-        # Kosongkan slot kapal yang berangkat kemarin
-        for ship_data in vessels.values():
-             if ship_data['etd_date'].normalize() == (date - timedelta(days=1)).normalize():
-                pass # Logika pengosongan sudah terjadi di loop utama
-
+        # C. PERBAIKAN: Kalkulasi YOR di akhir setiap hari
         occupied_slots = sum(1 for status in yard_status.values() if status is not None)
         total_slots = len(yard_status)
         yor_data.append({
-            'Tanggal': date,
+            'Tanggal': current_date,
             'Total Box di Yard': occupied_slots * slot_capacity,
             'Rasio Okupansi (%)': (occupied_slots / total_slots) * 100
         })
+        
+    # --- BAGIAN 3: AGREGASI & PERSIAPAN OUTPUT ---
+    df_daily_log = pd.DataFrame(daily_log)
     df_yor = pd.DataFrame(yor_data)
 
     recap_list = []
@@ -224,7 +210,7 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
             blocked_indices.add(i)
 
     for ship in active_ships:
-        if ship['name'] == current_ship['name']: continue # Hanya periksa aturan dari kapal lain
+        if ship['name'] == current_ship['name']: continue 
         
         etd_diff = abs((current_ship['etd_date'] - ship['etd_date']).days)
         
@@ -233,10 +219,8 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
             cluster_indices = [get_slot_idx_local(s) for s in cluster]
             min_idx, max_idx = min(cluster_indices), max(cluster_indices)
             
-            # Terapkan Zona Eksklusif Harian
             for i in range(min_idx - rules['daily_exclusion_zone'], max_idx + rules['daily_exclusion_zone'] + 1):
                 blocked_indices.add(i)
-            # Terapkan Jarak Eksternal jika berlaku
             if etd_diff <= 1:
                 for i in range(min_idx - rules['inter_ship_gap'], max_idx + rules['inter_ship_gap'] + 1):
                     blocked_indices.add(i)
@@ -255,14 +239,12 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
     for k, g in itertools.groupby(enumerate(placeable_slots), lambda item: get_slot_index_func(item[1]) - item[0]):
         placeable_blocks.append([item[1] for item in g])
     
-    # 2. Prioritas 1: Coba perluas cluster yang sudah ada
     for i, cluster in enumerate(ship['clusters']):
         if not cluster: continue
         cluster.sort(key=get_slot_index_func)
         first_slot_idx = get_slot_index_func(cluster[0])
         last_slot_idx = get_slot_index_func(cluster[-1])
         
-        # Coba perluas ke belakang
         potential_expansion_before = [s for s in placeable_slots if get_slot_index_func(s) in range(first_slot_idx - slots_needed, first_slot_idx)]
         if len(potential_expansion_before) >= slots_needed:
             slots_to_fill = potential_expansion_before[-slots_needed:]
@@ -270,7 +252,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill
         
-        # Coba perluas ke depan
         potential_expansion_after = [s for s in placeable_slots if get_slot_index_func(s) in range(last_slot_idx + 1, last_slot_idx + 1 + slots_needed)]
         if len(potential_expansion_after) >= slots_needed:
             slots_to_fill = potential_expansion_after[:slots_needed]
@@ -278,7 +259,6 @@ def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, curre
             for slot in slots_to_fill: yard_status[slot] = ship['name']
             return slots_to_fill
 
-    # 3. Prioritas 2 & 3: Buat cluster baru (di slot awal atau tambahan)
     valid_blocks = [block for block in placeable_blocks if len(block) >= slots_needed]
     if not valid_blocks:
         return []
