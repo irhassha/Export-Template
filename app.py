@@ -200,7 +200,8 @@ def run_simulation(df_schedule, df_trends, rules, rule_level):
             })
     df_map = pd.DataFrame(map_list)
 
-    return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots
+    # PERBAIKAN: Kembalikan juga dictionary 'vessels'
+    return df_yor, df_recap, df_map, df_daily_log, daily_yard_snapshots, vessels
 
 def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rules):
     free_slots = {slot for slot, owner in yard_status.items() if owner is None}
@@ -365,6 +366,7 @@ if uploaded_file:
                     'cluster_req_logic': 'Wajar' if rule_level != "Level 3: Darurat (Approval)" else 'Agresif'
                 }
                 with st.spinner("Menjalankan simulasi kompleks..."):
+                    # PERBAIKAN: Tangkap semua 6 return values
                     st.session_state['simulation_results'] = run_simulation(df_schedule, df_trends, sim_rules, rule_level)
                 st.success(f"Simulasi Selesai! Dijalankan menggunakan **{rule_level}**.")
     
@@ -372,12 +374,9 @@ if uploaded_file:
         st.error(f"Terjadi kesalahan saat memproses file Anda: {e}")
 
 if st.session_state['simulation_results']:
-    # Unpack hasil dari session_state
-    df_yor, df_recap, df_map, df_daily_log, daily_snapshots = st.session_state['simulation_results']
+    # PERBAIKAN: Unpack semua 6 return values
+    df_yor, df_recap, df_map, df_daily_log, daily_snapshots, vessels_data = st.session_state['simulation_results']
     
-    # Dapatkan data kapal dari simulasi untuk referensi
-    vessels_data = run_simulation(df_schedule, df_trends, {}, "Level 1: Optimal")[4] # Hacky way to get vessel dict, could be improved
-
     st.header("📍 Visualisasi Yard Harian (Interaktif)")
     
     date_options = list(daily_snapshots.keys())
@@ -388,7 +387,6 @@ if st.session_state['simulation_results']:
             format_func=lambda date: date.strftime('%d %b %Y')
         )
         
-        # --- PERUBAHAN: TAMPILAN SUMMARY BLOK & RENCANA HARIAN ---
         tab1, tab2 = st.tabs(["Ringkasan Area", "Rencana Harian (per Kapal)"])
 
         with tab1:
@@ -396,13 +394,13 @@ if st.session_state['simulation_results']:
             
             yard_state_on_date = daily_snapshots[selected_date]
             
+            # PERBAIKAN: Gunakan vessels_data yang sudah di-unpack
             active_vessels_on_date = [
                 v['name'] for v_name, v in vessels_data.items()
                 if selected_date >= v['start_date'] and selected_date <= v['etd_date']
             ]
 
-            # Buat layout kolom untuk kartu summary
-            cols = st.columns(4) # Tampilkan 4 area per baris
+            cols = st.columns(4)
             col_idx = 0
             for area_name, area_size in DEFAULT_YARD_CONFIG.items():
                 with cols[col_idx]:
@@ -414,13 +412,10 @@ if st.session_state['simulation_results']:
 
                     with st.container():
                         st.markdown(f"**{area_name}**")
-                        
                         st.metric(label="Slot Terpakai", value=f"{len(occupied_slots)} / {area_size}")
                         st.metric(label="Estimasi Box", value=f"{len(occupied_slots) * DEFAULT_SLOT_CAPACITY}")
-                        
                         st.markdown("**Kapal:**")
                         st.text(", ".join(vessels_in_area) if vessels_in_area else "-")
-                        
                         st.markdown("**Status:**")
                         if is_restricted:
                             st.warning("⚠️ Terkena Restriksi")
@@ -446,13 +441,11 @@ if st.session_state['simulation_results']:
                     
                     with st.container():
                         st.markdown(f"#### {vessel_name}")
-                        
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric(label="Kontainer Masuk", value=f"{boxes_needed} box")
                         with col2:
                             st.metric(label="Kebutuhan Slot", value=f"{slots_needed} slot")
-
                         st.markdown("**Rekomendasi Alokasi:**")
                         st.info(f"{vessel_log['Rekomendasi']}")
                         st.markdown("---")
