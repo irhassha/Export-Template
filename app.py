@@ -263,10 +263,44 @@ def find_placeable_slots(current_ship, all_ships, yard_status, current_date, rul
     return sorted(list(placeable_slots), key=get_slot_idx_local)
 
 
-def allocate_slots_intelligently(ship, slots_needed, yard_status, vessels, current_date, rules, get_slot_index_func):
-    placeable_slots = find_placeable_slots(ship, vessels, yard_status, current_date, rules)
-    if len(placeable_slots) < slots_needed:
-        return [], "Gagal: Tidak cukup slot valid yang tersedia (terblokir kapal lain)."
+def allocate_slots_intelligently(ship, current_date, free_slots, yard_status, rule_level, rules, cluster_info):
+    allocated_slots = []
+    box_failed = 0
+
+    # Hitung kebutuhan
+    slots_needed = ship['box_count']
+
+    # Step 1: Cari slot yang memungkinkan berdasarkan semua aturan aktif
+    placeable_slots = find_placeable_slots(
+        ship, current_date, free_slots, yard_status, rule_level, rules, cluster_info
+    )
+
+    # Step 2: Kelompokkan slot layak ke dalam blok
+    valid_blocks = group_slots_to_blocks(
+        placeable_slots, slots_needed, cluster_info, rules, rule_level
+    )
+
+    # Step 3: Jika blok valid tersedia, lakukan alokasi seperti biasa
+    if valid_blocks:
+        best_block = select_best_block(valid_blocks)
+        for slot in best_block[:slots_needed]:
+            yard_status[slot] = ship['name']
+            allocated_slots.append(slot)
+        return allocated_slots, 0
+
+    # Step 4: Jika tidak cukup blok valid, lakukan fallback jika aturan mengizinkan
+    fallback_allowed = rules.get("allow_fallback", True) or rule_level == "Level 3: Darurat (Approval)"
+    if fallback_allowed:
+        relaxed_slots = [s for s in free_slots if yard_status[s] is None]
+        if len(relaxed_slots) >= slots_needed:
+            for slot in relaxed_slots[:slots_needed]:
+                yard_status[slot] = ship['name'] + "*"  # Tandai bahwa ini alokasi relaksasi
+                allocated_slots.append(slot)
+            return allocated_slots, 0
+
+    # Step 5: Jika semua gagal, hitung box gagal
+    box_failed = slots_needed
+    return allocated_slots, box_failed
 
     def format_slot_list_to_string(slot_list):
         if not slot_list: return ""
